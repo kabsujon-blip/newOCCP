@@ -1,346 +1,228 @@
-// Standalone OCPP 1.6 Server with Web Dashboard
-// Deploy on Railway - Test devices WITHOUT Base44 first
+// OCPP 1.6 WebSocket Server - Standalone with Dashboard
+// Tracks connected devices and displays them in real-time
 
-const OCPP_PORT = 8080;
+const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
+const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
 
-// OCPP 1.6 Message Types
 const CALL = 2;
 const CALLRESULT = 3;
 const CALLERROR = 4;
 
-// In-memory storage for demo (use database in production)
-const connectedDevices = new Map(); // stationId -> { socket, info, lastSeen }
-const chargingSessions = new Map(); // sessionId -> session data
-const statusHistory = []; // Array of status events
+// Store devices and sessions in memory
+const connectedDevices = new Map();
+const activeSessions = new Map();
+const activityLog = [];
 
-console.log('🚀 Standalone OCPP Server Starting...');
+console.log('🚀 OCPP WebSocket Server Starting...');
 
-Deno.serve({ port: OCPP_PORT }, async (req) => {
-  const url = new URL(req.url);
+function addLog(message) {
+  const timestamp = new Date().toISOString();
+  activityLog.unshift({ timestamp, message });
+  if (activityLog.length > 50) activityLog.pop();
+  console.log(message);
+}
 
-  // ======================
-  // WEB DASHBOARD (HTML UI)
-  // ======================
-  if (url.pathname === '/') {
-    return new Response(`
-<!DOCTYPE html>
-<html>
+async function callBridge(action, data) {
+  if (!BRIDGE_URL) return null;
+  try {
+    const response = await fetch(BRIDGE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-bridge-secret': BRIDGE_SECRET || ''
+      },
+      body: JSON.stringify({ action, data })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('Bridge error:', error);
+    return null;
+  }
+}
+
+function generateDashboard() {
+  const devices = Array.from(connectedDevices.values());
+  const sessions = Array.from(activeSessions.values());
+  
+  return `<!DOCTYPE html>
+<html lang="en">
 <head>
-  <title>OCPP Server Dashboard</title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ OCPP Server Dashboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    .header {
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 20px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    h1 {
-      color: #667eea;
-      margin-bottom: 10px;
-    }
-    .badge {
-      display: inline-block;
-      padding: 4px 12px;
-      border-radius: 20px;
-      font-size: 14px;
-      font-weight: bold;
-    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { background: white; border-radius: 16px; padding: 30px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
+    .title { font-size: 32px; font-weight: 800; color: #667eea; display: flex; align-items: center; gap: 12px; }
+    .subtitle { color: #64748b; margin-top: 8px; font-size: 14px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .stat-label { color: #64748b; font-size: 12px; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
+    .stat-value { font-size: 28px; font-weight: 700; color: #1e293b; }
+    .card { background: white; border-radius: 16px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    .card-title { font-size: 20px; font-weight: 700; color: #1e293b; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+    .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
     .badge-success { background: #10b981; color: white; }
     .badge-danger { background: #ef4444; color: white; }
-    .card {
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 20px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    .device-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 15px;
-    }
-    .device-card {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border-radius: 8px;
-      padding: 15px;
-    }
-    .device-card h3 { margin-bottom: 10px; }
-    .device-info { font-size: 14px; margin-bottom: 5px; }
-    .btn {
-      background: white;
-      color: #667eea;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-weight: bold;
-      margin-top: 10px;
-    }
-    .btn:hover { opacity: 0.9; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      padding: 12px;
-      text-align: left;
-      border-bottom: 1px solid #e5e7eb;
-    }
-    th { background: #f9fafb; font-weight: bold; }
-    .status-online { color: #10b981; font-weight: bold; }
-    .status-offline { color: #ef4444; font-weight: bold; }
-    .log-entry {
-      background: #f9fafb;
-      padding: 10px;
-      border-left: 3px solid #667eea;
-      margin-bottom: 10px;
-      font-family: monospace;
-      font-size: 12px;
-    }
+    .device-grid { display: grid; gap: 15px; }
+    .device-item { background: #f8fafc; border-radius: 12px; padding: 20px; border: 2px solid #e2e8f0; transition: all 0.2s; }
+    .device-item:hover { border-color: #667eea; transform: translateY(-2px); }
+    .device-header { display: flex; justify-content: between; align-items: center; margin-bottom: 12px; }
+    .device-name { font-size: 18px; font-weight: 700; color: #1e293b; }
+    .device-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; font-size: 13px; color: #64748b; }
+    .session-table { width: 100%; border-collapse: collapse; }
+    .session-table th { background: #f8fafc; padding: 12px; text-align: left; font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; }
+    .session-table td { padding: 12px; border-top: 1px solid #e2e8f0; font-size: 14px; }
+    .log { background: #1e293b; border-radius: 12px; padding: 20px; max-height: 300px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
+    .log-entry { color: #10b981; margin-bottom: 4px; }
+    .empty { text-align: center; padding: 40px; color: #94a3b8; font-size: 14px; }
   </style>
+  <script>
+    setInterval(() => location.reload(), 5000);
+  </script>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>⚡ OCPP Server Dashboard</h1>
-      <p>Railway Standalone Testing Environment</p>
-      <p style="margin-top: 10px;">
-        <span class="badge badge-success" id="device-count">0 Devices</span>
-        <span class="badge badge-danger" id="session-count">0 Sessions</span>
-      </p>
+      <div class="title">⚡ OCPP Server Dashboard</div>
+      <div class="subtitle">Railway Standalone Testing Environment</div>
     </div>
 
-    <div class="card">
-      <h2>📡 Connected Devices</h2>
-      <div class="device-grid" id="devices">
-        <p style="color: #9ca3af;">No devices connected yet. Configure your device to connect to this server.</p>
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Connected Devices</div>
+        <div class="stat-value" style="color: #10b981;">${devices.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Sessions</div>
+        <div class="stat-value" style="color: #f59e0b;">${sessions.length}</div>
       </div>
     </div>
 
     <div class="card">
-      <h2>🔌 Active Charging Sessions</h2>
-      <table id="sessions-table">
-        <thead>
+      <div class="card-title">🔌 Connected Devices</div>
+      ${devices.length === 0 ? 
+        '<div class="empty">No devices connected yet. Configure your device to connect to this server.</div>' :
+        '<div class="device-grid">' + devices.map(d => `
+          <div class="device-item">
+            <div class="device-header">
+              <div class="device-name">${d.station_id}</div>
+              <span class="badge badge-success">Online</span>
+            </div>
+            <div class="device-meta">
+              <div><strong>Vendor:</strong> ${d.vendor || 'N/A'}</div>
+              <div><strong>Model:</strong> ${d.model || 'N/A'}</div>
+              <div><strong>Firmware:</strong> ${d.firmware || 'N/A'}</div>
+              <div><strong>Connected:</strong> ${new Date(d.connected_at).toLocaleTimeString()}</div>
+            </div>
+          </div>
+        `).join('') + '</div>'
+      }
+    </div>
+
+    <div class="card">
+      <div class="card-title">⚡ Active Charging Sessions</div>
+      ${sessions.length === 0 ?
+        '<div class="empty">No active sessions</div>' :
+        '<table class="session-table"><thead><tr><th>Station ID</th><th>Connector</th><th>Start Time</th><th>Energy (kWh)</th><th>Status</th></tr></thead><tbody>' +
+        sessions.map(s => `
           <tr>
-            <th>Station ID</th>
-            <th>Connector</th>
-            <th>Start Time</th>
-            <th>Energy (kWh)</th>
-            <th>Status</th>
+            <td>${s.station_id}</td>
+            <td>${s.connector_id}</td>
+            <td>${new Date(s.start_time).toLocaleString()}</td>
+            <td>${s.energy_kwh.toFixed(2)}</td>
+            <td><span class="badge badge-success">Charging</span></td>
           </tr>
-        </thead>
-        <tbody id="sessions">
-          <tr><td colspan="5" style="text-align: center; color: #9ca3af;">No active sessions</td></tr>
-        </tbody>
-      </table>
+        `).join('') + '</tbody></table>'
+      }
     </div>
 
     <div class="card">
-      <h2>📋 Recent Activity Log</h2>
-      <div id="log" style="max-height: 400px; overflow-y: auto;">
-        <p style="color: #9ca3af;">Server started. Waiting for device connections...</p>
+      <div class="card-title">📋 Recent Activity Log</div>
+      <div class="log">
+        ${activityLog.length === 0 ? 
+          '<div style="color: #64748b;">Server started. Waiting for device connections...</div>' :
+          activityLog.slice(0, 20).map(l => `<div class="log-entry">[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}</div>`).join('')
+        }
       </div>
     </div>
 
     <div class="card">
-      <h2>🔧 Server Information</h2>
-      <table>
-        <tr>
-          <td><strong>WebSocket URL:</strong></td>
-          <td><code>wss://YOUR-PROJECT.up.railway.app/ocpp16/[STATION-ID]</code></td>
-        </tr>
-        <tr>
-          <td><strong>API Endpoint:</strong></td>
-          <td><code>https://YOUR-PROJECT.up.railway.app/api/*</code></td>
-        </tr>
-        <tr>
-          <td><strong>Protocol:</strong></td>
-          <td>OCPP 1.6J (JSON over WebSocket)</td>
-        </tr>
-      </table>
+      <div class="card-title">🔧 Server Information</div>
+      <div class="device-meta">
+        <div><strong>WebSocket URL:</strong> <code>wss://YOUR-PROJECT.up.railway.app/ocpp16/[STATION-ID]</code></div>
+        <div><strong>API Endpoint:</strong> <code>https://YOUR-PROJECT.up.railway.app/api/*</code></div>
+        <div><strong>Protocol:</strong> OCPP 1.6J (JSON over WebSocket)</div>
+      </div>
     </div>
   </div>
-
-  <script>
-    // Auto-refresh data every 2 seconds
-    setInterval(async () => {
-      try {
-        const response = await fetch('/api/status');
-        const data = await response.json();
-        
-        // Update device count
-        document.getElementById('device-count').textContent = data.devices.length + ' Devices';
-        document.getElementById('session-count').textContent = data.sessions.length + ' Sessions';
-        
-        // Update devices
-        const devicesDiv = document.getElementById('devices');
-        if (data.devices.length === 0) {
-          devicesDiv.innerHTML = '<p style="color: #9ca3af;">No devices connected yet.</p>';
-        } else {
-          devicesDiv.innerHTML = data.devices.map(function(device) {
-            return '<div class="device-card">' +
-              '<h3>🔌 ' + device.id + '</h3>' +
-              '<div class="device-info">Status: ' + device.status + '</div>' +
-              '<div class="device-info">Firmware: ' + (device.firmware || 'Unknown') + '</div>' +
-              '<div class="device-info">Last Seen: ' + new Date(device.lastSeen).toLocaleTimeString() + '</div>' +
-              '<button class="btn" onclick="sendCommand(\'' + device.id + '\', \'Reset\')">Reset Device</button>' +
-            '</div>';
-          }).join('');
-        }
-        
-        // Update sessions
-        const sessionsBody = document.getElementById('sessions');
-        if (data.sessions.length === 0) {
-          sessionsBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #9ca3af;">No active sessions</td></tr>';
-        } else {
-          sessionsBody.innerHTML = data.sessions.map(function(session) {
-            return '<tr>' +
-              '<td>' + session.stationId + '</td>' +
-              '<td>' + session.connector + '</td>' +
-              '<td>' + new Date(session.startTime).toLocaleString() + '</td>' +
-              '<td>' + session.energy.toFixed(2) + '</td>' +
-              '<td class="status-online">' + session.status + '</td>' +
-            '</tr>';
-          }).join('');
-        }
-        
-        // Update log (last 10 entries)
-        const logDiv = document.getElementById('log');
-        if (data.log.length > 0) {
-          logDiv.innerHTML = data.log.slice(-10).reverse().map(function(entry) {
-            return '<div class="log-entry">' + new Date(entry.time).toLocaleTimeString() + ' - ' + entry.message + '</div>';
-          }).join('');
-        }
-      } catch (error) {
-        console.error('Error fetching status:', error);
-      }
-    }, 2000);
-
-    async function sendCommand(stationId, action) {
-      try {
-        const response = await fetch('/api/command/' + stationId, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: action, payload: { type: 'Soft' } })
-        });
-        const result = await response.json();
-        alert(result.success ? 'Command sent!' : 'Failed: ' + result.error);
-      } catch (error) {
-        alert('Error: ' + error.message);
-      }
-    }
-  </script>
 </body>
-</html>
-    `, {
+</html>`;
+}
+
+Deno.serve({ port: 8080 }, async (req) => {
+  const url = new URL(req.url);
+
+  // Dashboard
+  if (url.pathname === '/' || url.pathname === '/dashboard') {
+    return new Response(generateDashboard(), {
       headers: { 'Content-Type': 'text/html' }
     });
   }
 
-  // ======================
-  // API: Get Server Status
-  // ======================
+  // API Endpoints
   if (url.pathname === '/api/status') {
-    const devices = Array.from(connectedDevices.entries()).map(([id, data]) => ({
-      id,
-      status: data.info.status || 'Available',
-      firmware: data.info.firmware,
-      lastSeen: data.lastSeen
-    }));
-
-    const sessions = Array.from(chargingSessions.values()).map(session => ({
-      stationId: session.stationId,
-      connector: session.connector,
-      startTime: session.startTime,
-      energy: session.energy || 0,
-      status: session.status
-    }));
-
     return Response.json({
-      devices,
-      sessions,
-      log: statusHistory
+      success: true,
+      devices: connectedDevices.size,
+      sessions: activeSessions.size
     });
   }
 
-  // ======================
-  // API: Send Command to Device
-  // ======================
-  if (url.pathname.startsWith('/api/command/') && req.method === 'POST') {
-    const stationId = url.pathname.split('/').pop();
-    const device = connectedDevices.get(stationId);
-
-    if (!device || device.socket.readyState !== WebSocket.OPEN) {
-      return Response.json({ success: false, error: 'Device not connected' }, { status: 404 });
-    }
-
-    const { action, payload } = await req.json();
-    const messageId = Date.now().toString();
-    const ocppMessage = [CALL, messageId, action, payload || {}];
-
-    device.socket.send(JSON.stringify(ocppMessage));
-    addLog(`Command sent to ${stationId}: ${action}`);
-
-    return Response.json({ success: true, messageId });
-  }
-
-  // ======================
-  // API: Get All Devices (for Base44)
-  // ======================
   if (url.pathname === '/api/devices') {
-    const devices = Array.from(connectedDevices.entries()).map(([id, data]) => ({
-      station_id: id,
-      status: data.info.status || 'available',
-      firmware_version: data.info.firmware,
-      last_heartbeat: data.lastSeen,
-      connected: true
-    }));
-
-    return Response.json({ success: true, devices });
+    return Response.json({
+      success: true,
+      devices: Array.from(connectedDevices.values())
+    });
   }
 
-  // ======================
-  // API: Get Device Sessions (for Base44)
-  // ======================
-  if (url.pathname.startsWith('/api/sessions/')) {
-    const stationId = url.pathname.split('/').pop();
-    const sessions = Array.from(chargingSessions.values())
-      .filter(s => s.stationId === stationId)
-      .map(session => ({
-        station_id: session.stationId,
-        connector_id: session.connector,
-        start_time: session.startTime,
-        energy_delivered: session.energy || 0,
-        status: session.status,
-        transaction_id: session.transactionId
-      }));
-
+  if (url.pathname.startsWith('/api/sessions')) {
+    const stationId = url.pathname.split('/')[3];
+    const sessions = stationId ?
+      Array.from(activeSessions.values()).filter(s => s.station_id === stationId) :
+      Array.from(activeSessions.values());
     return Response.json({ success: true, sessions });
   }
 
-  // ======================
-  // OCPP WebSocket Connection
-  // ======================
+  // Command endpoint
+  if (url.pathname === '/command' && req.method === 'POST') {
+    try {
+      const { station_id, action, payload } = await req.json();
+      const device = connectedDevices.get(station_id);
+      
+      if (!device || !device.socket || device.socket.readyState !== WebSocket.OPEN) {
+        return Response.json({ success: false, error: 'Station not connected' }, { status: 404 });
+      }
+
+      const messageId = Date.now().toString();
+      const ocppMessage = [CALL, messageId, action, payload || {}];
+      device.socket.send(JSON.stringify(ocppMessage));
+      
+      addLog(`📤 Sent ${action} to ${station_id}`);
+      return Response.json({ success: true, message: 'Command sent', messageId });
+    } catch (error) {
+      return Response.json({ success: false, error: error.message }, { status: 500 });
+    }
+  }
+
+  // WebSocket handling
   const pathParts = url.pathname.split('/');
   const stationId = pathParts[pathParts.length - 1];
 
   if (!stationId || stationId === 'ocpp16') {
-    return new Response('Station ID required. Use: /ocpp16/[station_id]', { status: 400 });
+    return new Response('Station ID required', { status: 400 });
   }
 
   if (req.headers.get('upgrade') !== 'websocket') {
@@ -350,13 +232,15 @@ Deno.serve({ port: OCPP_PORT }, async (req) => {
   const { socket, response } = Deno.upgradeWebSocket(req);
 
   socket.onopen = () => {
-    console.log(`✅ Device Connected: ${stationId}`);
     connectedDevices.set(stationId, {
-      socket,
-      info: {},
-      lastSeen: new Date().toISOString()
+      station_id: stationId,
+      socket: socket,
+      connected_at: new Date().toISOString(),
+      vendor: 'Unknown',
+      model: 'Unknown',
+      firmware: 'Unknown'
     });
-    addLog(`Device ${stationId} connected`);
+    addLog(`✅ Connected: ${stationId}`);
   };
 
   socket.onmessage = async (event) => {
@@ -364,109 +248,100 @@ Deno.serve({ port: OCPP_PORT }, async (req) => {
       const message = JSON.parse(event.data);
       const [messageType, messageId, action, payload] = message;
 
-      console.log(`📨 From ${stationId}:`, action, payload);
-      
-      const device = connectedDevices.get(stationId);
-      if (device) {
-        device.lastSeen = new Date().toISOString();
-      }
+      addLog(`📨 From ${stationId}: ${action || 'Response'}`);
 
       if (messageType === CALL) {
-        let responsePayload;
+        let response;
 
         switch (action) {
           case 'BootNotification':
-            responsePayload = {
+            response = {
               status: 'Accepted',
               currentTime: new Date().toISOString(),
               interval: 300
             };
+            // Update device info
+            const device = connectedDevices.get(stationId);
             if (device) {
-              device.info.firmware = payload.firmwareVersion;
-              device.info.status = 'Available';
+              device.vendor = payload.chargePointVendor || 'Unknown';
+              device.model = payload.chargePointModel || 'Unknown';
+              device.firmware = payload.firmwareVersion || 'Unknown';
             }
-            addLog(`${stationId} booted (FW: ${payload.firmwareVersion})`);
+            await callBridge('registerStation', {
+              station_id: stationId,
+              name: `Station ${stationId}`,
+              location: 'Auto-registered',
+              status: 'available'
+            });
             break;
 
           case 'Heartbeat':
-            responsePayload = { currentTime: new Date().toISOString() };
-            addLog(`${stationId} heartbeat`);
+            response = { currentTime: new Date().toISOString() };
+            await callBridge('updateStation', {
+              station_id: stationId,
+              updates: { last_heartbeat: new Date().toISOString() }
+            });
             break;
 
           case 'StatusNotification':
-            responsePayload = {};
-            if (device) {
-              device.info.status = payload.status;
-            }
-            addLog(`${stationId} status: ${payload.status}`);
+            response = {};
+            const statusMap = {
+              'Available': 'available',
+              'Charging': 'charging',
+              'Faulted': 'error',
+              'Unavailable': 'offline'
+            };
+            await callBridge('updateStation', {
+              station_id: stationId,
+              updates: { status: statusMap[payload.status] || 'offline' }
+            });
             break;
 
           case 'StartTransaction':
             const transactionId = Date.now();
-            responsePayload = {
-              transactionId,
-              idTagInfo: { status: 'Accepted' }
-            };
-            chargingSessions.set(transactionId, {
-              stationId,
-              connector: payload.connectorId || 1,
-              startTime: new Date().toISOString(),
-              meterStart: payload.meterStart || 0,
-              energy: 0,
-              status: 'Active',
-              transactionId
+            response = { transactionId, idTagInfo: { status: 'Accepted' } };
+            activeSessions.set(transactionId.toString(), {
+              station_id: stationId,
+              connector_id: payload.connectorId,
+              start_time: new Date().toISOString(),
+              energy_kwh: 0
             });
-            addLog(`${stationId} started charging (ID: ${transactionId})`);
+            await callBridge('createSession', {
+              station_id: stationId,
+              start_time: new Date().toISOString(),
+              status: 'active',
+              transaction_id: transactionId.toString()
+            });
             break;
 
           case 'StopTransaction':
-            responsePayload = { idTagInfo: { status: 'Accepted' } };
-            const session = chargingSessions.get(payload.transactionId);
-            if (session) {
-              session.status = 'Completed';
-              session.energy = (payload.meterStop - session.meterStart) / 1000;
-              addLog(`${stationId} stopped charging (${session.energy.toFixed(2)} kWh)`);
-            }
-            break;
-
-          case 'MeterValues':
-            responsePayload = {};
-            // Update session energy in real-time
+            response = { idTagInfo: { status: 'Accepted' } };
+            activeSessions.delete(payload.transactionId?.toString());
+            await callBridge('updateSession', {
+              station_id: stationId,
+              updates: { status: 'completed', end_time: new Date().toISOString() }
+            });
             break;
 
           default:
-            responsePayload = {};
-            addLog(`${stationId} unknown action: ${action}`);
+            response = {};
         }
 
-        socket.send(JSON.stringify([CALLRESULT, messageId, responsePayload]));
+        socket.send(JSON.stringify([CALLRESULT, messageId, response]));
       }
     } catch (error) {
       console.error('Error:', error);
-      addLog(`Error processing message from ${stationId}: ${error.message}`);
     }
   };
 
   socket.onclose = () => {
-    console.log(`❌ Device Disconnected: ${stationId}`);
     connectedDevices.delete(stationId);
-    addLog(`Device ${stationId} disconnected`);
+    addLog(`❌ Disconnected: ${stationId}`);
+  };
+
+  socket.onerror = (error) => {
+    console.error(`WebSocket error on ${stationId}:`, error);
   };
 
   return response;
 });
-
-function addLog(message) {
-  statusHistory.push({
-    time: new Date().toISOString(),
-    message
-  });
-  // Keep only last 100 entries
-  if (statusHistory.length > 100) {
-    statusHistory.shift();
-  }
-}
-
-console.log(`✅ Server running on port ${OCPP_PORT}`);
-console.log(`🌐 Dashboard: http://localhost:${OCPP_PORT}`);
-console.log(`📡 WebSocket: ws://localhost:${OCPP_PORT}/ocpp16/[STATION-ID]`);
