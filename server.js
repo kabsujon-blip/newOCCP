@@ -184,23 +184,23 @@ Deno.serve({ port: OCPP_PORT }, async (req) => {
         const data = await response.json();
         
         // Update device count
-        document.getElementById('device-count').textContent = `${data.devices.length} Devices`;
-        document.getElementById('session-count').textContent = `${data.sessions.length} Sessions`;
+        document.getElementById('device-count').textContent = data.devices.length + ' Devices';
+        document.getElementById('session-count').textContent = data.sessions.length + ' Sessions';
         
         // Update devices
         const devicesDiv = document.getElementById('devices');
         if (data.devices.length === 0) {
           devicesDiv.innerHTML = '<p style="color: #9ca3af;">No devices connected yet.</p>';
         } else {
-          devicesDiv.innerHTML = data.devices.map(device => `
-            <div class="device-card">
-              <h3>🔌 ${device.id}</h3>
-              <div class="device-info">Status: ${device.status}</div>
-              <div class="device-info">Firmware: ${device.firmware || 'Unknown'}</div>
-              <div class="device-info">Last Seen: ${new Date(device.lastSeen).toLocaleTimeString()}</div>
-              <button class="btn" onclick="sendCommand('${device.id}', 'Reset')">Reset Device</button>
-            </div>
-          `).join('');
+          devicesDiv.innerHTML = data.devices.map(function(device) {
+            return '<div class="device-card">' +
+              '<h3>🔌 ' + device.id + '</h3>' +
+              '<div class="device-info">Status: ' + device.status + '</div>' +
+              '<div class="device-info">Firmware: ' + (device.firmware || 'Unknown') + '</div>' +
+              '<div class="device-info">Last Seen: ' + new Date(device.lastSeen).toLocaleTimeString() + '</div>' +
+              '<button class="btn" onclick="sendCommand(\'' + device.id + '\', \'Reset\')">Reset Device</button>' +
+            '</div>';
+          }).join('');
         }
         
         // Update sessions
@@ -208,23 +208,23 @@ Deno.serve({ port: OCPP_PORT }, async (req) => {
         if (data.sessions.length === 0) {
           sessionsBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #9ca3af;">No active sessions</td></tr>';
         } else {
-          sessionsBody.innerHTML = data.sessions.map(session => `
-            <tr>
-              <td>${session.stationId}</td>
-              <td>${session.connector}</td>
-              <td>${new Date(session.startTime).toLocaleString()}</td>
-              <td>${session.energy.toFixed(2)}</td>
-              <td class="status-online">${session.status}</td>
-            </tr>
-          `).join('');
+          sessionsBody.innerHTML = data.sessions.map(function(session) {
+            return '<tr>' +
+              '<td>' + session.stationId + '</td>' +
+              '<td>' + session.connector + '</td>' +
+              '<td>' + new Date(session.startTime).toLocaleString() + '</td>' +
+              '<td>' + session.energy.toFixed(2) + '</td>' +
+              '<td class="status-online">' + session.status + '</td>' +
+            '</tr>';
+          }).join('');
         }
         
         // Update log (last 10 entries)
         const logDiv = document.getElementById('log');
         if (data.log.length > 0) {
-          logDiv.innerHTML = data.log.slice(-10).reverse().map(entry => `
-            <div class="log-entry">${new Date(entry.time).toLocaleTimeString()} - ${entry.message}</div>
-          `).join('');
+          logDiv.innerHTML = data.log.slice(-10).reverse().map(function(entry) {
+            return '<div class="log-entry">' + new Date(entry.time).toLocaleTimeString() + ' - ' + entry.message + '</div>';
+          }).join('');
         }
       } catch (error) {
         console.error('Error fetching status:', error);
@@ -233,10 +233,10 @@ Deno.serve({ port: OCPP_PORT }, async (req) => {
 
     async function sendCommand(stationId, action) {
       try {
-        const response = await fetch(`/api/command/${stationId}`, {
+        const response = await fetch('/api/command/' + stationId, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, payload: { type: 'Soft' } })
+          body: JSON.stringify({ action: action, payload: { type: 'Soft' } })
         });
         const result = await response.json();
         alert(result.success ? 'Command sent!' : 'Failed: ' + result.error);
