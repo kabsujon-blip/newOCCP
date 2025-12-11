@@ -378,9 +378,9 @@ Deno.serve({ port: 8080 }, async (req) => {
             break;
 
           case 'StartTransaction':
-            const transactionId = Date.now();
-            response = { transactionId, idTagInfo: { status: 'Accepted' } };
-            activeSessions.set(transactionId.toString(), {
+            const txId = Date.now();
+            response = { transactionId: txId, idTagInfo: { status: 'Accepted' } };
+            activeSessions.set(txId.toString(), {
               station_id: stationId,
               connector_id: payload.connectorId,
               start_time: new Date().toISOString(),
@@ -391,7 +391,7 @@ Deno.serve({ port: 8080 }, async (req) => {
               station_id: stationId,
               start_time: new Date().toISOString(),
               status: 'active',
-              transaction_id: transactionId.toString()
+              transaction_id: txId.toString()
             });
             break;
 
