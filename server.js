@@ -130,7 +130,7 @@ function generateDashboard() {
     .port-card.active .power-value { color: white; }
     .power-label { font-size: 12px; color: #64748b; font-weight: 600; margin-top: 5px; }
     .port-card.active .power-label { color: rgba(255,255,255,0.9); }
-    .energy-display { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: center; font-size: 11px; }
+    .energy-display { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; text-align: center; font-size: 10px; }
     .energy-item { padding: 8px; background: rgba(0,0,0,0.03); border-radius: 6px; }
     .port-card.active .energy-item { background: rgba(255,255,255,0.15); color: white; }
     .energy-value { font-weight: 700; font-size: 14px; }
@@ -195,12 +195,24 @@ function generateDashboard() {
               ${isActive ? `
                 <div class="energy-display">
                   <div class="energy-item">
-                    <div>Energy</div>
-                    <div class="energy-value">${energy.toFixed(2)} kWh</div>
+                    <div>⚡ Energy</div>
+                    <div class="energy-value">${energy.toFixed(3)} kWh</div>
                   </div>
                   <div class="energy-item">
-                    <div>Duration</div>
+                    <div>⏱️ Duration</div>
                     <div class="energy-value">${duration}m</div>
+                  </div>
+                  <div class="energy-item">
+                    <div>🔌 Voltage</div>
+                    <div class="energy-value">${(session?.voltage_v || 0).toFixed(1)}V</div>
+                  </div>
+                  <div class="energy-item">
+                    <div>⚙️ Current</div>
+                    <div class="energy-value">${(session?.current_a || 0).toFixed(2)}A</div>
+                  </div>
+                  <div class="energy-item">
+                    <div>🌡️ Temp</div>
+                    <div class="energy-value">${(session?.temperature_c || 0).toFixed(0)}°C</div>
                   </div>
                 </div>
               ` : '<div style="text-align: center; padding: 10px; color: #94a3b8; font-size: 12px;">No device connected</div>'}
@@ -442,14 +454,26 @@ Deno.serve({ port: 8080 }, async (req) => {
 
               addLog(`⚡ Port ${connectorId}: ${power}W | ${energy.toFixed(3)}kWh | ${voltage}V | ${current}A | ${temperature}°C`);
 
-              // Bridge to Base44 database
-              await callBridge('updateSession', {
-                station_id: stationId,
-                updates: {
-                  energy_delivered: energy,
-                  current_power: power
+              // Bridge to Base44 database - send directly to updateSessionMeter endpoint
+              if (BRIDGE_URL) {
+                try {
+                  await fetch(BRIDGE_URL, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'x-bridge-secret': BRIDGE_SECRET || ''
+                    },
+                    body: JSON.stringify({
+                      station_id: stationId,
+                      energy: energy,
+                      power: power
+                    })
+                  });
+                  console.log(`✅ Bridge: Sent ${power}W to Base44`);
+                } catch (error) {
+                  console.error('Bridge error:', error);
                 }
-              });
+              }
             } else {
               addLog(`⚠️ No active session found for Port ${connectorId}`);
             }
