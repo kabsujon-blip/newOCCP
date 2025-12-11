@@ -304,7 +304,8 @@ Deno.serve({ port: 8080 }, async (req) => {
               station_id: stationId,
               connector_id: payload.connectorId,
               start_time: new Date().toISOString(),
-              energy_kwh: 0
+              energy_kwh: 0,
+              current_power_w: 0
             });
             await callBridge('createSession', {
               station_id: stationId,
@@ -316,11 +317,52 @@ Deno.serve({ port: 8080 }, async (req) => {
 
           case 'StopTransaction':
             response = { idTagInfo: { status: 'Accepted' } };
+            const session = activeSessions.get(payload.transactionId?.toString());
+            if (session && payload.meterStop) {
+              session.energy_kwh = (payload.meterStop / 1000).toFixed(3);
+            }
             activeSessions.delete(payload.transactionId?.toString());
             await callBridge('updateSession', {
               station_id: stationId,
-              updates: { status: 'completed', end_time: new Date().toISOString() }
+              updates: { 
+                status: 'completed', 
+                end_time: new Date().toISOString(),
+                energy_delivered: session?.energy_kwh || 0
+              }
             });
+            break;
+
+          case 'MeterValues':
+            response = {};
+            // Extract real-time power and energy from meter values
+            const transId = payload.transactionId?.toString();
+            if (transId && activeSessions.has(transId)) {
+              const currentSession = activeSessions.get(transId);
+              
+              // Parse sampled values for Power.Active.Import (Watts) and Energy.Active.Import.Register (Wh)
+              if (payload.meterValue && payload.meterValue[0]?.sampledValue) {
+                for (const sample of payload.meterValue[0].sampledValue) {
+                  if (sample.measurand === 'Power.Active.Import' && sample.value) {
+                    currentSession.current_power_w = parseFloat(sample.value);
+                  }
+                  if (sample.measurand === 'Energy.Active.Import.Register' && sample.value) {
+                    const energyWh = parseFloat(sample.value);
+                    currentSession.energy_kwh = (energyWh / 1000).toFixed(3);
+                  }
+                }
+                
+                // Update Base44 database with real-time values
+                await callBridge('updateSession', {
+                  station_id: stationId,
+                  updates: {
+                    energy_delivered: parseFloat(currentSession.energy_kwh) || 0,
+                    current_power: currentSession.current_power_w || 0
+                  }
+                });
+                
+                addLog(`⚡ Power: ${currentSession.current_power_w || 0}W | Energy: ${currentSession.energy_kwh || 0} kWh`);
+              }
+            }
             break;
 
           default:
