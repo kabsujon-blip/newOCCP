@@ -44,6 +44,9 @@ function generateDashboard() {
   const devices = Array.from(connectedDevices.values());
   const sessions = Array.from(activeSessions.values());
   
+  // Calculate total power across all ports
+  const totalPower = sessions.reduce((sum, s) => sum + (s.current_power_w || 0), 0);
+  
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -53,7 +56,7 @@ function generateDashboard() {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-    .container { max-width: 1200px; margin: 0 auto; }
+    .container { max-width: 1400px; margin: 0 auto; }
     .header { background: white; border-radius: 16px; padding: 30px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
     .title { font-size: 32px; font-weight: 800; color: #667eea; display: flex; align-items: center; gap: 12px; }
     .subtitle { color: #64748b; margin-top: 8px; font-size: 14px; }
@@ -66,28 +69,40 @@ function generateDashboard() {
     .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
     .badge-success { background: #10b981; color: white; }
     .badge-danger { background: #ef4444; color: white; }
+    .badge-idle { background: #64748b; color: white; }
+    .ports-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+    .port-card { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); border-radius: 12px; padding: 20px; border: 3px solid #e2e8f0; transition: all 0.3s; }
+    .port-card.active { background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-color: #10b981; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3); }
+    .port-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .port-number { font-size: 24px; font-weight: 800; color: #1e293b; }
+    .port-card.active .port-number { color: white; }
+    .power-display { text-align: center; padding: 15px; background: rgba(0,0,0,0.05); border-radius: 8px; margin-bottom: 10px; }
+    .port-card.active .power-display { background: rgba(255,255,255,0.2); }
+    .power-value { font-size: 32px; font-weight: 800; color: #1e293b; font-family: 'Courier New', monospace; }
+    .port-card.active .power-value { color: white; }
+    .power-label { font-size: 12px; color: #64748b; font-weight: 600; margin-top: 5px; }
+    .port-card.active .power-label { color: rgba(255,255,255,0.9); }
+    .energy-display { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: center; font-size: 11px; }
+    .energy-item { padding: 8px; background: rgba(0,0,0,0.03); border-radius: 6px; }
+    .port-card.active .energy-item { background: rgba(255,255,255,0.15); color: white; }
+    .energy-value { font-weight: 700; font-size: 14px; }
     .device-grid { display: grid; gap: 15px; }
-    .device-item { background: #f8fafc; border-radius: 12px; padding: 20px; border: 2px solid #e2e8f0; transition: all 0.2s; }
-    .device-item:hover { border-color: #667eea; transform: translateY(-2px); }
-    .device-header { display: flex; justify-content: between; align-items: center; margin-bottom: 12px; }
+    .device-item { background: #f8fafc; border-radius: 12px; padding: 20px; border: 2px solid #e2e8f0; }
     .device-name { font-size: 18px; font-weight: 700; color: #1e293b; }
-    .device-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; font-size: 13px; color: #64748b; }
-    .session-table { width: 100%; border-collapse: collapse; }
-    .session-table th { background: #f8fafc; padding: 12px; text-align: left; font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; }
-    .session-table td { padding: 12px; border-top: 1px solid #e2e8f0; font-size: 14px; }
+    .device-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; font-size: 13px; color: #64748b; margin-top: 12px; }
     .log { background: #1e293b; border-radius: 12px; padding: 20px; max-height: 300px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
     .log-entry { color: #10b981; margin-bottom: 4px; }
     .empty { text-align: center; padding: 40px; color: #94a3b8; font-size: 14px; }
   </style>
   <script>
-    setInterval(() => location.reload(), 5000);
+    setInterval(() => location.reload(), 3000);
   </script>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <div class="title">⚡ OCPP Server Dashboard</div>
-      <div class="subtitle">Railway Standalone Testing Environment</div>
+      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds</div>
     </div>
 
     <div class="stats">
@@ -96,21 +111,64 @@ function generateDashboard() {
         <div class="stat-value" style="color: #10b981;">${devices.length}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Active Sessions</div>
-        <div class="stat-value" style="color: #f59e0b;">${sessions.length}</div>
+        <div class="stat-label">Active Ports</div>
+        <div class="stat-value" style="color: #f59e0b;">${sessions.length}/10</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Power</div>
+        <div class="stat-value" style="color: #8b5cf6;">${totalPower.toFixed(0)} W</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Energy</div>
+        <div class="stat-value" style="color: #06b6d4;">${sessions.reduce((sum, s) => sum + (s.energy_kwh || 0), 0).toFixed(2)} kWh</div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">🔌 Connected Devices</div>
+      <div class="card-title">🔌 All 10 Ports - Live Status</div>
+      <div class="ports-grid">
+        ${Array.from({ length: 10 }, (_, i) => i + 1).map(portNum => {
+          const session = sessions.find(s => s.connector_id === portNum);
+          const isActive = !!session;
+          const power = session?.current_power_w || 0;
+          const energy = session?.energy_kwh || 0;
+          const duration = session ? Math.floor((Date.now() - new Date(session.start_time)) / 60000) : 0;
+          
+          return `
+            <div class="port-card ${isActive ? 'active' : ''}">
+              <div class="port-header">
+                <div class="port-number">Port ${portNum}</div>
+                <span class="badge ${isActive ? 'badge-success' : 'badge-idle'}">${isActive ? 'CHARGING' : 'IDLE'}</span>
+              </div>
+              <div class="power-display">
+                <div class="power-value">${power.toFixed(0)}</div>
+                <div class="power-label">WATTS</div>
+              </div>
+              ${isActive ? `
+                <div class="energy-display">
+                  <div class="energy-item">
+                    <div>Energy</div>
+                    <div class="energy-value">${energy.toFixed(2)} kWh</div>
+                  </div>
+                  <div class="energy-item">
+                    <div>Duration</div>
+                    <div class="energy-value">${duration}m</div>
+                  </div>
+                </div>
+              ` : '<div style="text-align: center; padding: 10px; color: #94a3b8; font-size: 12px;">No device connected</div>'}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📱 Connected Devices</div>
       ${devices.length === 0 ? 
-        '<div class="empty">No devices connected yet. Configure your device to connect to this server.</div>' :
+        '<div class="empty">No devices connected yet.</div>' :
         '<div class="device-grid">' + devices.map(d => `
           <div class="device-item">
-            <div class="device-header">
-              <div class="device-name">${d.station_id}</div>
-              <span class="badge badge-success">Online</span>
-            </div>
+            <div class="device-name">${d.station_id} <span class="badge badge-success">Online</span></div>
             <div class="device-meta">
               <div><strong>Vendor:</strong> ${d.vendor || 'N/A'}</div>
               <div><strong>Model:</strong> ${d.model || 'N/A'}</div>
@@ -123,38 +181,12 @@ function generateDashboard() {
     </div>
 
     <div class="card">
-      <div class="card-title">⚡ Active Charging Sessions</div>
-      ${sessions.length === 0 ?
-        '<div class="empty">No active sessions</div>' :
-        '<table class="session-table"><thead><tr><th>Station ID</th><th>Connector</th><th>Start Time</th><th>Energy (kWh)</th><th>Status</th></tr></thead><tbody>' +
-        sessions.map(s => `
-          <tr>
-            <td>${s.station_id}</td>
-            <td>${s.connector_id}</td>
-            <td>${new Date(s.start_time).toLocaleString()}</td>
-            <td>${s.energy_kwh.toFixed(2)}</td>
-            <td><span class="badge badge-success">Charging</span></td>
-          </tr>
-        `).join('') + '</tbody></table>'
-      }
-    </div>
-
-    <div class="card">
-      <div class="card-title">📋 Recent Activity Log</div>
+      <div class="card-title">📋 Activity Log</div>
       <div class="log">
         ${activityLog.length === 0 ? 
-          '<div style="color: #64748b;">Server started. Waiting for device connections...</div>' :
-          activityLog.slice(0, 20).map(l => `<div class="log-entry">[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}</div>`).join('')
+          '<div style="color: #64748b;">Waiting for activity...</div>' :
+          activityLog.slice(0, 15).map(l => `<div class="log-entry">[${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}</div>`).join('')
         }
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">🔧 Server Information</div>
-      <div class="device-meta">
-        <div><strong>WebSocket URL:</strong> <code>wss://YOUR-PROJECT.up.railway.app/ocpp16/[STATION-ID]</code></div>
-        <div><strong>API Endpoint:</strong> <code>https://YOUR-PROJECT.up.railway.app/api/*</code></div>
-        <div><strong>Protocol:</strong> OCPP 1.6J (JSON over WebSocket)</div>
       </div>
     </div>
   </div>
