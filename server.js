@@ -294,7 +294,7 @@ function generateDashboard() {
   <div class="container">
     <div class="header">
       <div class="title">⚡ OCPP Server Dashboard</div>
-      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds | <a href="/logs" style="color:#667eea;text-decoration:none;font-weight:600;">📊 View Logs & Reports</a></div>
+      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds | <a href="/logs" style="color:#667eea;text-decoration:none;font-weight:600;">📊 View Logs & Reports</a> | <a href="/tutorial" style="color:#10b981;text-decoration:none;font-weight:600;">📚 Integration Tutorial</a></div>
     </div>
 
     <div class="stats">
@@ -393,9 +393,15 @@ function generateDashboard() {
         }
       </div>
     </div>
-  </div>
-</body>
-</html>`;
+
+    <div class="card" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white;">
+      <div class="card-title" style="color: white;">📚 Need Help Integrating with Base44?</div>
+      <p style="opacity: 0.9; margin-bottom: 15px;">Learn how to connect your Base44 app to this Railway server for real-time charging management.</p>
+      <a href="/tutorial" style="display: inline-block; background: white; color: #10b981; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Integration Tutorial →</a>
+    </div>
+    </div>
+    </body>
+    </html>`;
 }
 
 Deno.serve({ port: 8080 }, async (req) => {
@@ -431,6 +437,236 @@ Deno.serve({ port: 8080 }, async (req) => {
       Array.from(activeSessions.values());
     return Response.json({ success: true, sessions });
   }
+
+  // Tutorial endpoint - integration guide
+  if (url.pathname === '/tutorial') {
+    const tutorialHtml = `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📚 Base44 Integration Tutorial</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+      .container { max-width: 1200px; margin: 0 auto; }
+      .header { background: white; border-radius: 16px; padding: 30px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
+      .title { font-size: 32px; font-weight: 800; color: #667eea; }
+      .card { background: white; border-radius: 16px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+      .step { background: #f8fafc; border-left: 4px solid #667eea; padding: 20px; margin: 15px 0; border-radius: 8px; }
+      .step-number { display: inline-block; background: #667eea; color: white; width: 32px; height: 32px; border-radius: 50%; text-align: center; line-height: 32px; font-weight: 700; margin-right: 12px; }
+      code { background: #1e293b; color: #10b981; padding: 2px 8px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 13px; }
+      .endpoint { background: #1e293b; color: #10b981; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; margin: 10px 0; overflow-x: auto; }
+      .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+      .badge-get { background: #10b981; color: white; }
+      .badge-post { background: #f59e0b; color: white; }
+      h3 { color: #1e293b; margin: 20px 0 10px 0; }
+      a { color: #667eea; text-decoration: none; font-weight: 600; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="title">📚 Base44 Integration Tutorial</div>
+        <p style="color: #64748b; margin-top: 8px;">Complete guide to connect your Base44 app with this Railway OCPP server</p>
+      </div>
+
+      <div class="card">
+        <h3>🎯 Overview</h3>
+        <p>This Railway server acts as an OCPP 1.6 WebSocket server that manages EV charging devices. You can integrate it with Base44 to build custom charging management apps.</p>
+      </div>
+
+      <div class="card">
+        <h3>🔗 Available API Endpoints</h3>
+
+        <div class="step">
+          <span class="badge badge-get">GET</span>
+          <code>/api/status</code>
+          <p style="margin-top: 10px;">Check if Railway server is online and get device/session counts.</p>
+          <div class="endpoint">
+  Response: { success: true, devices: 1, sessions: 3 }
+          </div>
+        </div>
+
+        <div class="step">
+          <span class="badge badge-get">GET</span>
+          <code>/api/devices</code>
+          <p style="margin-top: 10px;">Get list of all connected charging devices.</p>
+          <div class="endpoint">
+  Response: {
+    success: true,
+    devices: [{
+      station_id: "01",
+      vendor: "ChargePoint",
+      model: "M01-10",
+      connected_at: "2025-12-11T10:30:00Z"
+    }]
+  }
+          </div>
+        </div>
+
+        <div class="step">
+          <span class="badge badge-get">GET</span>
+          <code>/api/sessions/:stationId</code>
+          <p style="margin-top: 10px;">Get active charging sessions for a specific device (e.g., /api/sessions/01).</p>
+          <div class="endpoint">
+  Response: {
+    success: true,
+    sessions: [{
+      station_id: "01",
+      connector_id: 8,
+      energy_kwh: 0.024,
+      current_power_w: 266,
+      voltage_v: 229,
+      current_a: 1.94,
+      temperature_c: 0,
+      start_time: "2025-12-11T10:45:00Z"
+    }]
+  }
+          </div>
+        </div>
+
+        <div class="step">
+          <span class="badge badge-post">POST</span>
+          <code>/command</code>
+          <p style="margin-top: 10px;">Send OCPP commands to devices (start/stop charging).</p>
+          <div class="endpoint">
+  Request Body:
+  {
+    station_id: "01",
+    action: "RemoteStartTransaction",
+    payload: { connectorId: 8, idTag: "user@email.com" }
+  }
+
+  Response: { success: true, message: "Command sent" }
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🔧 Setting Up Base44 Integration</h3>
+
+        <div class="step">
+          <span class="step-number">1</span>
+          <strong>Create a Base44 Backend Function</strong>
+          <p style="margin-top: 10px;">Create <code>functions/getRailwayData.js</code> in your Base44 app:</p>
+          <div class="endpoint" style="margin-top: 10px;">
+  import { createClientFromRequest } from 'npm:@base44/sdk@0.8.4';
+
+  const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
+
+  Deno.serve(async (req) => {
+    try {
+      const { endpoint } = await req.json();
+
+      const response = await fetch(\`\${RAILWAY_URL}\${endpoint}\`);
+      const data = await response.json();
+
+      return Response.json(data);
+    } catch (error) {
+      return Response.json({ error: error.message }, { status: 500 });
+    }
+  });
+          </div>
+        </div>
+
+        <div class="step">
+          <span class="step-number">2</span>
+          <strong>Set Environment Variables in Base44</strong>
+          <p style="margin-top: 10px;">Go to Base44 Dashboard → Settings → Environment Variables and add:</p>
+          <div class="endpoint" style="margin-top: 10px;">
+  RAILWAY_URL=https://newoccp.up.railway.app
+          </div>
+          <p style="margin-top: 8px; font-size: 12px; color: #64748b;">(Replace with your actual Railway app URL)</p>
+        </div>
+
+        <div class="step">
+          <span class="step-number">3</span>
+          <strong>Fetch Data in Your Base44 Page</strong>
+          <p style="margin-top: 10px;">Use the backend function to get Railway data:</p>
+          <div class="endpoint" style="margin-top: 10px;">
+  import { base44 } from "@/api/base44Client";
+
+  // Get active sessions
+  const { data } = await base44.functions.invoke('getRailwayData', {
+    endpoint: '/api/sessions/01'
+  });
+
+  // data.sessions will contain active charging sessions
+  console.log(data.sessions);
+          </div>
+        </div>
+
+        <div class="step">
+          <span class="step-number">4</span>
+          <strong>Send Commands to Device</strong>
+          <p style="margin-top: 10px;">Create <code>functions/sendRailwayCommand.js</code>:</p>
+          <div class="endpoint" style="margin-top: 10px;">
+  const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
+
+  Deno.serve(async (req) => {
+    const { station_id, action, payload } = await req.json();
+
+    const response = await fetch(\`\${RAILWAY_URL}/command\`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ station_id, action, payload })
+    });
+
+    return Response.json(await response.json());
+  });
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>📊 Real-Time Updates Pattern</h3>
+        <p>For live data updates, use React Query with polling:</p>
+        <div class="endpoint" style="margin-top: 10px;">
+  const { data: sessions } = useQuery({
+    queryKey: ['railway-sessions'],
+    queryFn: async () => {
+      const { data } = await base44.functions.invoke('getRailwayData', {
+        endpoint: '/api/sessions/01'
+      });
+      return data.sessions;
+    },
+    refetchInterval: 2000  // Update every 2 seconds
+  });
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🎨 Example Use Cases</h3>
+        <div class="step">
+          <strong>1. Charging Dashboard</strong>
+          <p style="margin-top: 8px;">Display all 10 ports with real-time power, voltage, and energy data</p>
+        </div>
+        <div class="step">
+          <strong>2. User Charging App</strong>
+          <p style="margin-top: 8px;">Let users select a port, start charging, and monitor their session</p>
+        </div>
+        <div class="step">
+          <strong>3. Admin Control Panel</strong>
+          <p style="margin-top: 8px;">Remotely start/stop any port, view logs, and generate reports</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>🔗 Quick Links</h3>
+        <p><a href="/">← Back to Dashboard</a></p>
+        <p style="margin-top: 10px;"><a href="/logs">📊 View Session Logs & Reports</a></p>
+        <p style="margin-top: 10px;"><a href="/api/status" target="_blank">🔍 Test API Status Endpoint</a></p>
+      </div>
+      </div>
+      </body>
+      </html>`;
+
+      return new Response(tutorialHtml, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+      }
 
   // Logs endpoint - view/filter completed sessions
   if (url.pathname === '/logs') {
@@ -706,6 +942,20 @@ Deno.serve({ port: 8080 }, async (req) => {
   };
 
   socket.onclose = () => {
+    // Auto-complete any active sessions from this device
+    for (const [txId, session] of activeSessions.entries()) {
+      if (session.station_id === stationId) {
+        session.end_time = new Date().toISOString();
+        session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
+        session.status = 'completed';
+
+        completedSessions.unshift({ ...session, transaction_id: txId });
+        activeSessions.delete(txId);
+
+        addLog(`🔄 Auto-completed Port ${session.connector_id} (device disconnected)`);
+      }
+    }
+
     connectedDevices.delete(stationId);
     addLog(`❌ Disconnected: ${stationId}`);
   };
