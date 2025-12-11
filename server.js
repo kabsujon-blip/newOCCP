@@ -1,44 +1,92 @@
-// OCPP 1.6 WebSocket Server - Standalone with Dashboard
-// Tracks connected devices and displays them in real-time
+// OCPP 1.6 WebSocket Server - Comprehensive with Real Power Monitoring
+  // Full MeterValues parsing and live dashboard
 
-const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
-const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
+  const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
+  const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
 
-const CALL = 2;
-const CALLRESULT = 3;
-const CALLERROR = 4;
+  const CALL = 2;
+  const CALLRESULT = 3;
+  const CALLERROR = 4;
 
-// Store devices and sessions in memory
-const connectedDevices = new Map();
-const activeSessions = new Map();
-const activityLog = [];
+  // Store devices and sessions in memory
+  const connectedDevices = new Map();
+  const activeSessions = new Map();
+  const activityLog = [];
 
-console.log('🚀 OCPP WebSocket Server Starting...');
+  console.log('🚀 OCPP WebSocket Server Starting...');
+  console.log('📊 MeterValues parsing enabled for live power monitoring');
 
-function addLog(message) {
+  function addLog(message) {
   const timestamp = new Date().toISOString();
   activityLog.unshift({ timestamp, message });
   if (activityLog.length > 50) activityLog.pop();
   console.log(message);
-}
+  }
 
-async function callBridge(action, data) {
+  async function callBridge(action, data) {
   if (!BRIDGE_URL) return null;
   try {
-    const response = await fetch(BRIDGE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-bridge-secret': BRIDGE_SECRET || ''
-      },
-      body: JSON.stringify({ action, data })
-    });
-    return await response.json();
+  const response = await fetch(BRIDGE_URL, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-bridge-secret': BRIDGE_SECRET || ''
+  },
+  body: JSON.stringify({ action, data })
+  });
+  return await response.json();
   } catch (error) {
-    console.error('Bridge error:', error);
-    return null;
+  console.error('Bridge error:', error);
+  return null;
   }
-}
+  }
+
+  // Parse MeterValues to extract power, energy, voltage, current, temp
+  function parseMeterValues(meterValue) {
+    let power = 0;
+    let energy = 0;
+    let voltage = 0;
+    let current = 0;
+    let temperature = 0;
+
+    if (!meterValue || !Array.isArray(meterValue)) return { power, energy, voltage, current, temperature };
+
+    for (const meter of meterValue) {
+      if (!meter.sampledValue || !Array.isArray(meter.sampledValue)) continue;
+
+      for (const sample of meter.sampledValue) {
+        const measurand = sample.measurand || '';
+        const value = parseFloat(sample.value) || 0;
+
+        // Power in Watts (W) - CRITICAL: This is real-time power consumption
+        if (measurand === 'Power.Active.Import') {
+          power = value;
+        }
+
+        // Energy in Watt-hours (Wh) - convert to kWh
+        if (measurand === 'Energy.Active.Import.Register') {
+          energy = value / 1000; // Wh to kWh
+        }
+
+        // Voltage (V) - typically L1-N phase
+        if (measurand === 'Voltage' && sample.phase === 'L1-N') {
+          voltage = value;
+        }
+
+        // Current (A) - typically L1-N phase
+        if (measurand === 'Current.Import' && sample.phase === 'L1-N') {
+          current = value;
+        }
+
+        // Temperature (Celsius)
+        if (measurand === 'Temperature') {
+          temperature = value;
+        }
+      }
+    }
+
+    return { power, energy, voltage, current, temperature };
+  }
 
 function generateDashboard() {
   const devices = Array.from(connectedDevices.values());
@@ -366,34 +414,44 @@ Deno.serve({ port: 8080 }, async (req) => {
 
           case 'MeterValues':
             response = {};
-            // Extract real-time power and energy from meter values
-            const transId = payload.transactionId?.toString();
-            if (transId && activeSessions.has(transId)) {
-              const currentSession = activeSessions.get(transId);
-              
-              // Parse sampled values for Power.Active.Import (Watts) and Energy.Active.Import.Register (Wh)
-              if (payload.meterValue && payload.meterValue[0]?.sampledValue) {
-                for (const sample of payload.meterValue[0].sampledValue) {
-                  if (sample.measurand === 'Power.Active.Import' && sample.value) {
-                    currentSession.current_power_w = parseFloat(sample.value);
-                  }
-                  if (sample.measurand === 'Energy.Active.Import.Register' && sample.value) {
-                    const energyWh = parseFloat(sample.value);
-                    currentSession.energy_kwh = (energyWh / 1000).toFixed(3);
-                  }
-                }
-                
-                // Update Base44 database with real-time values
-                await callBridge('updateSession', {
-                  station_id: stationId,
-                  updates: {
-                    energy_delivered: parseFloat(currentSession.energy_kwh) || 0,
-                    current_power: currentSession.current_power_w || 0
-                  }
-                });
-                
-                addLog(`⚡ Power: ${currentSession.current_power_w || 0}W | Energy: ${currentSession.energy_kwh || 0} kWh`);
+
+            // Extract connector ID and transaction ID
+            const connectorId = payload.connectorId;
+            const transactionId = payload.transactionId?.toString();
+
+            addLog(`📊 MeterValues from Port ${connectorId} (TxID: ${transactionId})`);
+
+            // Find session by connector ID or transaction ID
+            let sessionFound = null;
+            for (const [key, session] of activeSessions.entries()) {
+              if (session.connector_id === connectorId || key === transactionId) {
+                sessionFound = session;
+                break;
               }
+            }
+
+            if (sessionFound && payload.meterValue) {
+              const { power, energy, voltage, current, temperature } = parseMeterValues(payload.meterValue);
+
+              // Update session with ALL real values from device
+              sessionFound.current_power_w = power;
+              sessionFound.energy_kwh = energy;
+              sessionFound.voltage_v = voltage;
+              sessionFound.current_a = current;
+              sessionFound.temperature_c = temperature;
+
+              addLog(`⚡ Port ${connectorId}: ${power}W | ${energy.toFixed(3)}kWh | ${voltage}V | ${current}A | ${temperature}°C`);
+
+              // Bridge to Base44 database
+              await callBridge('updateSession', {
+                station_id: stationId,
+                updates: {
+                  energy_delivered: energy,
+                  current_power: power
+                }
+              });
+            } else {
+              addLog(`⚠️ No active session found for Port ${connectorId}`);
             }
             break;
 
