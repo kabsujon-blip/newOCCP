@@ -36,9 +36,17 @@
   },
   body: JSON.stringify({ action, data })
   });
-  return await response.json();
+  
+  // Check if response is JSON
+  const contentType = response.headers.get('content-type');
+  if (contentType && contentType.includes('application/json')) {
+    return await response.json();
+  } else {
+    console.error('Bridge returned non-JSON:', await response.text());
+    return null;
+  }
   } catch (error) {
-  console.error('Bridge error:', error);
+  console.error('Bridge error:', error.message);
   return null;
   }
   }
