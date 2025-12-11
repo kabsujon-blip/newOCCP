@@ -1,5 +1,5 @@
-// OCPP 1.6 WebSocket Server - Comprehensive with Real Power Monitoring
-  // Full MeterValues parsing and live dashboard
+// OCPP 1.6 WebSocket Server - With Complete Session Logging & Reports
+  // Full MeterValues parsing, live dashboard, and historical logs
 
   const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
   const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
@@ -8,13 +8,15 @@
   const CALLRESULT = 3;
   const CALLERROR = 4;
 
-  // Store devices and sessions in memory
+  // Store devices, sessions, and complete history
   const connectedDevices = new Map();
   const activeSessions = new Map();
+  const completedSessions = []; // Stores all completed sessions for reports
   const activityLog = [];
 
   console.log('🚀 OCPP WebSocket Server Starting...');
-  console.log('📊 MeterValues parsing enabled for live power monitoring');
+  console.log('📊 Session logging enabled - All charging records saved');
+  console.log('📁 Reports available at /logs endpoint');
 
   function addLog(message) {
   const timestamp = new Date().toISOString();
@@ -88,6 +90,140 @@
     return { power, energy, voltage, current, temperature };
   }
 
+function generateLogsPage(sessions, filters) {
+  const { date, station, port } = filters;
+  
+  // Calculate statistics
+  const totalSessions = sessions.length;
+  const totalEnergy = sessions.reduce((sum, s) => sum + (parseFloat(s.energy_kwh) || 0), 0);
+  const totalDuration = sessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
+  const avgDuration = totalSessions > 0 ? Math.round(totalDuration / totalSessions) : 0;
+
+  // Group by date
+  const byDate = {};
+  sessions.forEach(s => {
+    const day = s.start_time.split('T')[0];
+    if (!byDate[day]) byDate[day] = [];
+    byDate[day].push(s);
+  });
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>📊 Charging Logs & Reports</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    .header { background: white; border-radius: 16px; padding: 30px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
+    .title { font-size: 32px; font-weight: 800; color: #667eea; }
+    .subtitle { color: #64748b; margin-top: 8px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .stat-label { color: #64748b; font-size: 12px; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; }
+    .stat-value { font-size: 28px; font-weight: 700; color: #1e293b; }
+    .card { background: white; border-radius: 16px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    .filters input, .filters select { padding: 10px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; }
+    .btn { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .btn:hover { background: #5568d3; }
+    .btn-download { background: #10b981; }
+    .btn-download:hover { background: #059669; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+    th { background: #f8fafc; font-weight: 600; color: #64748b; font-size: 12px; text-transform: uppercase; }
+    .date-group { background: #f8fafc; padding: 15px; border-radius: 12px; margin-bottom: 15px; }
+    .date-header { font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
+    .port-badge { display: inline-block; padding: 4px 10px; background: #667eea; color: white; border-radius: 6px; font-size: 12px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">📊 Charging Logs & Reports</div>
+      <div class="subtitle">Complete session history with filtering and download</div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Total Sessions</div>
+        <div class="stat-value" style="color: #667eea;">${totalSessions}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Energy</div>
+        <div class="stat-value" style="color: #10b981;">${totalEnergy.toFixed(2)} kWh</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Duration</div>
+        <div class="stat-value" style="color: #f59e0b;">${totalDuration} min</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Duration</div>
+        <div class="stat-value" style="color: #8b5cf6;">${avgDuration} min</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <form class="filters" method="GET">
+        <input type="date" name="date" value="${date || ''}" placeholder="Select Date">
+        <input type="text" name="station" value="${station || ''}" placeholder="Station ID (e.g., 01)">
+        <input type="number" name="port" value="${port || ''}" placeholder="Port (1-10)" min="1" max="10">
+        <button type="submit" class="btn">🔍 Filter</button>
+        <button type="submit" name="format" value="csv" class="btn btn-download">📥 Download CSV</button>
+        <a href="/logs" class="btn" style="text-decoration:none;">🔄 Reset</a>
+        <a href="/" class="btn" style="text-decoration:none;">🏠 Dashboard</a>
+      </form>
+    </div>
+
+    ${Object.keys(byDate).length === 0 ? 
+      '<div class="card"><p style="text-align:center;color:#64748b;">No sessions found. Start charging to see logs here!</p></div>' :
+      Object.keys(byDate).sort().reverse().map(day => {
+        const daySessions = byDate[day];
+        const dayEnergy = daySessions.reduce((sum, s) => sum + (parseFloat(s.energy_kwh) || 0), 0);
+        return `
+          <div class="card">
+            <div class="date-group">
+              <div class="date-header">📅 ${day} - ${daySessions.length} sessions, ${dayEnergy.toFixed(2)} kWh</div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Port</th>
+                  <th>Start Time</th>
+                  <th>End Time</th>
+                  <th>Duration</th>
+                  <th>Energy (kWh)</th>
+                  <th>Max Power (W)</th>
+                  <th>Voltage (V)</th>
+                  <th>Current (A)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${daySessions.map(s => `
+                  <tr>
+                    <td><span class="port-badge">Port ${s.connector_id}</span></td>
+                    <td>${new Date(s.start_time).toLocaleTimeString()}</td>
+                    <td>${s.end_time ? new Date(s.end_time).toLocaleTimeString() : 'Active'}</td>
+                    <td>${s.duration_minutes || 0} min</td>
+                    <td><strong>${(s.energy_kwh || 0).toFixed(3)}</strong></td>
+                    <td>${s.current_power_w || 0} W</td>
+                    <td>${(s.voltage_v || 0).toFixed(1)} V</td>
+                    <td>${(s.current_a || 0).toFixed(2)} A</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }).join('')
+    }
+  </div>
+</body>
+</html>`;
+}
+
 function generateDashboard() {
   const devices = Array.from(connectedDevices.values());
   const sessions = Array.from(activeSessions.values());
@@ -150,7 +286,7 @@ function generateDashboard() {
   <div class="container">
     <div class="header">
       <div class="title">⚡ OCPP Server Dashboard</div>
-      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds</div>
+      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds | <a href="/logs" style="color:#667eea;text-decoration:none;font-weight:600;">📊 View Logs & Reports</a></div>
     </div>
 
     <div class="stats">
@@ -288,6 +424,54 @@ Deno.serve({ port: 8080 }, async (req) => {
     return Response.json({ success: true, sessions });
   }
 
+  // Logs endpoint - view/filter completed sessions
+  if (url.pathname === '/logs') {
+    const date = url.searchParams.get('date'); // YYYY-MM-DD format
+    const station = url.searchParams.get('station');
+    const port = url.searchParams.get('port');
+    const format = url.searchParams.get('format'); // 'json' or 'csv'
+
+    let filtered = [...completedSessions];
+
+    // Filter by date
+    if (date) {
+      filtered = filtered.filter(s => s.start_time.startsWith(date));
+    }
+
+    // Filter by station
+    if (station) {
+      filtered = filtered.filter(s => s.station_id === station);
+    }
+
+    // Filter by port
+    if (port) {
+      filtered = filtered.filter(s => s.connector_id === parseInt(port));
+    }
+
+    // Return CSV format for download
+    if (format === 'csv') {
+      const csv = [
+        'Date,Station,Port,Start Time,End Time,Duration (min),Energy (kWh),Max Power (W),Avg Voltage (V),Avg Current (A)',
+        ...filtered.map(s => 
+          `${s.start_time.split('T')[0]},${s.station_id},${s.connector_id},${s.start_time},${s.end_time || 'N/A'},${s.duration_minutes || 0},${s.energy_kwh || 0},${s.current_power_w || 0},${s.voltage_v || 0},${s.current_a || 0}`
+        )
+      ].join('\n');
+
+      return new Response(csv, {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="charging-logs-${date || 'all'}.csv"`
+        }
+      });
+    }
+
+    // HTML report page
+    const html = generateLogsPage(filtered, { date, station, port });
+    return new Response(html, {
+      headers: { 'Content-Type': 'text/html' }
+    });
+  }
+
   // Command endpoint
   if (url.pathname === '/command' && req.method === 'POST') {
     try {
@@ -410,18 +594,40 @@ Deno.serve({ port: 8080 }, async (req) => {
           case 'StopTransaction':
             response = { idTagInfo: { status: 'Accepted' } };
             const session = activeSessions.get(payload.transactionId?.toString());
-            if (session && payload.meterStop) {
-              session.energy_kwh = (payload.meterStop / 1000).toFixed(3);
-            }
-            activeSessions.delete(payload.transactionId?.toString());
-            await callBridge('updateSession', {
-              station_id: stationId,
-              updates: { 
-                status: 'completed', 
-                end_time: new Date().toISOString(),
-                energy_delivered: session?.energy_kwh || 0
+            if (session) {
+              // Finalize session data
+              if (payload.meterStop) {
+                session.energy_kwh = (payload.meterStop / 1000).toFixed(3);
               }
-            });
+              session.end_time = new Date().toISOString();
+              session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
+              session.status = 'completed';
+              
+              // Save to completed sessions log
+              completedSessions.unshift({
+                ...session,
+                transaction_id: payload.transactionId?.toString()
+              });
+              
+              // Keep last 1000 sessions
+              if (completedSessions.length > 1000) completedSessions.pop();
+              
+              addLog(`✅ Session completed: Port ${session.connector_id}, ${session.energy_kwh}kWh, ${session.duration_minutes}m`);
+              
+              // Remove from active
+              activeSessions.delete(payload.transactionId?.toString());
+              
+              // Update Base44
+              await callBridge('updateSession', {
+                station_id: stationId,
+                updates: { 
+                  status: 'completed', 
+                  end_time: session.end_time,
+                  energy_delivered: session.energy_kwh || 0,
+                  duration_minutes: session.duration_minutes
+                }
+              });
+            }
             break;
 
           case 'MeterValues':
