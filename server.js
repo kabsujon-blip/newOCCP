@@ -13,10 +13,44 @@
   const activeSessions = new Map();
   const completedSessions = []; // Stores all completed sessions for reports
   const activityLog = [];
+  const portLastPowerCheck = new Map(); // Track when port last had 0W
 
   console.log('🚀 OCPP WebSocket Server Starting...');
   console.log('📊 Session logging enabled - All charging records saved');
   console.log('📁 Reports available at /logs endpoint');
+
+  // Auto-cleanup ghost sessions every 5 seconds
+  setInterval(() => {
+    const now = Date.now();
+    for (const [txId, session] of activeSessions.entries()) {
+      const power = session.current_power_w || 0;
+      const portKey = `${session.station_id}-${session.connector_id}`;
+      
+      // If port has 0W power
+      if (power === 0) {
+        const lastCheck = portLastPowerCheck.get(portKey) || now;
+        const secondsAtZero = (now - lastCheck) / 1000;
+        
+        // If 0W for more than 30 seconds, auto-complete session
+        if (secondsAtZero > 30) {
+          session.end_time = new Date().toISOString();
+          session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
+          session.status = 'completed';
+          
+          completedSessions.unshift({ ...session, transaction_id: txId });
+          activeSessions.delete(txId);
+          portLastPowerCheck.delete(portKey);
+          
+          addLog(`🔄 Auto-cleaned ghost session: Port ${session.connector_id} (0W for 30s)`);
+        } else if (!portLastPowerCheck.has(portKey)) {
+          portLastPowerCheck.set(portKey, now);
+        }
+      } else {
+        // Port has power, reset timer
+        portLastPowerCheck.delete(portKey);
+      }
+    }
+  }, 5000);
 
   function addLog(message) {
   const timestamp = new Date().toISOString();
@@ -304,7 +338,7 @@ function generateDashboard() {
       </div>
       <div class="stat-card">
         <div class="stat-label">Active Ports</div>
-        <div class="stat-value" style="color: #f59e0b;">${sessions.length}/10</div>
+        <div class="stat-value" style="color: #f59e0b;">${sessions.filter(s => (s.current_power_w || 0) > 1).length}/10</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Total Power</div>
@@ -321,8 +355,8 @@ function generateDashboard() {
       <div class="ports-grid">
         ${Array.from({ length: 10 }, (_, i) => i + 1).map(portNum => {
           const session = sessions.find(s => s.connector_id === portNum);
-          const isActive = !!session;
           const power = session?.current_power_w || 0;
+          const isActive = !!session && power > 1; // Only active if session exists AND has power
           const energy = session?.energy_kwh || 0;
           const duration = session ? Math.floor((Date.now() - new Date(session.start_time)) / 60000) : 0;
           
@@ -330,7 +364,7 @@ function generateDashboard() {
             <div class="port-card ${isActive ? 'active' : ''}">
               <div class="port-header">
                 <div class="port-number">Port ${portNum}</div>
-                <span class="badge ${isActive ? 'badge-success' : 'badge-idle'}">${isActive ? 'CHARGING' : 'IDLE'}</span>
+                <span class="badge ${isActive ? 'badge-success' : 'badge-idle'}">${isActive ? 'CHARGING' : 'AVAILABLE'}</span>
               </div>
               <div class="power-display">
                 <div class="power-value">${power.toFixed(0)}</div>
@@ -359,7 +393,7 @@ function generateDashboard() {
                     <div class="energy-value">${(session?.temperature_c || 0).toFixed(0)}°C</div>
                   </div>
                 </div>
-              ` : '<div style="text-align: center; padding: 10px; color: #94a3b8; font-size: 12px;">No device connected</div>'}
+              ` : '<div style="text-align: center; padding: 10px; color: #94a3b8; font-size: 12px;">Available for charging</div>'}
             </div>
           `;
         }).join('')}
@@ -858,6 +892,10 @@ Deno.serve({ port: 8080 }, async (req) => {
               
               addLog(`✅ Session completed: Port ${session.connector_id}, ${session.energy_kwh}kWh, ${session.duration_minutes}m`);
               
+              // Clear power tracking
+              const portKey = `${stationId}-${session.connector_id}`;
+              portLastPowerCheck.delete(portKey);
+              
               // Remove from active
               activeSessions.delete(payload.transactionId?.toString());
               
@@ -952,7 +990,22 @@ Deno.serve({ port: 8080 }, async (req) => {
         completedSessions.unshift({ ...session, transaction_id: txId });
         activeSessions.delete(txId);
 
+        // Clear power tracking
+        const portKey = `${stationId}-${session.connector_id}`;
+        portLastPowerCheck.delete(portKey);
+
         addLog(`🔄 Auto-completed Port ${session.connector_id} (device disconnected)`);
+
+        // Notify Base44
+        callBridge('updateSession', {
+          station_id: stationId,
+          updates: { 
+            status: 'completed', 
+            end_time: session.end_time,
+            energy_delivered: session.energy_kwh || 0,
+            duration_minutes: session.duration_minutes
+          }
+        });
       }
     }
 
