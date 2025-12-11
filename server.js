@@ -454,7 +454,7 @@ Deno.serve({ port: 8080 }, async (req) => {
 
               addLog(`⚡ Port ${connectorId}: ${power}W | ${energy.toFixed(3)}kWh | ${voltage}V | ${current}A | ${temperature}°C`);
 
-              // Bridge to Base44 database - send directly to updateSessionMeter endpoint
+              // Bridge to Base44 database - send port-specific data
               if (BRIDGE_URL) {
                 try {
                   await fetch(BRIDGE_URL, {
@@ -465,11 +465,12 @@ Deno.serve({ port: 8080 }, async (req) => {
                     },
                     body: JSON.stringify({
                       station_id: stationId,
+                      connector_id: connectorId,
                       energy: energy,
                       power: power
                     })
                   });
-                  console.log(`✅ Bridge: Sent ${power}W to Base44`);
+                  console.log(`✅ Bridge: Port ${connectorId} → ${power}W to Base44`);
                 } catch (error) {
                   console.error('Bridge error:', error);
                 }
