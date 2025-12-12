@@ -389,7 +389,9 @@ function generateDashboard() {
           return `
             <div class="port-card ${isActive ? 'active' : ''}">
               <div class="port-header">
-                <div class="port-number">Port ${portNum}</div>
+                <a href="/port/${portNum}" style="text-decoration: none; color: inherit;">
+                  <div class="port-number" style="cursor: pointer;">Port ${portNum}</div>
+                </a>
                 <span class="badge ${isActive ? 'badge-success' : 'badge-idle'}">${isActive ? 'CHARGING' : 'AVAILABLE'}</span>
               </div>
               <div class="power-display">
@@ -735,6 +737,140 @@ const { data: sessions } = useQuery({
     });
   }
 
+  // Port History endpoint
+  if (url.pathname.startsWith('/port/')) {
+    const portNumber = parseInt(url.pathname.split('/')[2]);
+    
+    if (isNaN(portNumber) || portNumber < 1 || portNumber > 10) {
+      return new Response('Invalid port number', { status: 400 });
+    }
+
+    const portSessions = completedSessions.filter(s => s.connector_id === portNumber);
+    
+    // Group by date
+    const byDate = {};
+    portSessions.forEach(s => {
+      const day = s.start_time.split('T')[0];
+      if (!byDate[day]) byDate[day] = [];
+      byDate[day].push(s);
+    });
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔌 Port ${portNumber} History</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    .header { background: white; border-radius: 16px; padding: 30px; margin-bottom: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.1); }
+    .title { font-size: 32px; font-weight: 800; color: #667eea; }
+    .subtitle { color: #64748b; margin-top: 8px; }
+    .card { background: white; border-radius: 16px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    .date-group { background: #f8fafc; padding: 20px; border-radius: 12px; margin-bottom: 15px; border-left: 4px solid #667eea; }
+    .date-header { font-size: 20px; font-weight: 700; color: #1e293b; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+    .date-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 10px; }
+    .stat-box { background: white; padding: 12px; border-radius: 8px; text-align: center; }
+    .stat-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+    .stat-value { font-size: 20px; font-weight: 700; color: #667eea; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+    th { background: #f8fafc; font-weight: 600; color: #64748b; font-size: 11px; text-transform: uppercase; }
+    .btn { display: inline-block; padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; text-decoration: none; }
+    .btn:hover { background: #5568d3; }
+    .empty { text-align: center; padding: 60px; color: #94a3b8; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">🔌 Port ${portNumber} - Complete History</div>
+      <div class="subtitle">All charging sessions for this port, lifetime storage</div>
+      <div style="margin-top: 15px;">
+        <a href="/" class="btn">← Back to Dashboard</a>
+        <a href="/logs" class="btn" style="margin-left: 10px; background: #10b981;">📊 All Logs</a>
+      </div>
+    </div>
+
+    ${Object.keys(byDate).length === 0 ? 
+      '<div class="card"><div class="empty">No charging history yet for Port ' + portNumber + '</div></div>' :
+      Object.keys(byDate).sort().reverse().map(day => {
+        const daySessions = byDate[day];
+        const dayEnergy = daySessions.reduce((sum, s) => sum + (parseFloat(s.energy_kwh) || 0), 0);
+        const dayDuration = daySessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
+        const avgPower = daySessions.reduce((sum, s) => sum + (s.current_power_w || 0), 0) / daySessions.length;
+        
+        return `
+          <div class="card">
+            <div class="date-group">
+              <div class="date-header">
+                <span>📅 ${day}</span>
+                <span style="font-size: 14px; color: #667eea;">${daySessions.length} sessions</span>
+              </div>
+              
+              <div class="date-stats">
+                <div class="stat-box">
+                  <div class="stat-label">Total Energy</div>
+                  <div class="stat-value">${dayEnergy.toFixed(5)} kWh</div>
+                </div>
+                <div class="stat-box">
+                  <div class="stat-label">Total Time</div>
+                  <div class="stat-value">${dayDuration} min</div>
+                </div>
+                <div class="stat-box">
+                  <div class="stat-label">Avg Power</div>
+                  <div class="stat-value">${avgPower.toFixed(0)} W</div>
+                </div>
+                <div class="stat-box">
+                  <div class="stat-label">Sessions</div>
+                  <div class="stat-value">${daySessions.length}</div>
+                </div>
+              </div>
+            </div>
+            
+            <table>
+              <thead>
+                <tr>
+                  <th>Start Time</th>
+                  <th>End Time</th>
+                  <th>Duration</th>
+                  <th>Energy (kWh)</th>
+                  <th>Max Power (W)</th>
+                  <th>Voltage (V)</th>
+                  <th>Current (A)</th>
+                  <th>Temp (°C)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${daySessions.map(s => `
+                  <tr>
+                    <td>${new Date(s.start_time).toLocaleTimeString()}</td>
+                    <td>${s.end_time ? new Date(s.end_time).toLocaleTimeString() : 'Active'}</td>
+                    <td>${s.duration_minutes || 0} min</td>
+                    <td><strong>${(s.energy_kwh || 0).toFixed(5)}</strong></td>
+                    <td>${s.current_power_w || 0} W</td>
+                    <td>${(s.voltage_v || 0).toFixed(1)} V</td>
+                    <td>${(s.current_a || 0).toFixed(2)} A</td>
+                    <td>${(s.temperature_c || 0).toFixed(0)} °C</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }).join('')
+    }
+  </div>
+</body>
+</html>`;
+
+    return new Response(html, {
+      headers: { 'Content-Type': 'text/html' }
+    });
+  }
+
   // Logs endpoint
   if (url.pathname === '/logs') {
     const date = url.searchParams.get('date');
@@ -919,8 +1055,6 @@ const { data: sessions } = useQuery({
                 transaction_id: payload.transactionId?.toString()
               });
               
-              if (completedSessions.length > 1000) completedSessions.pop();
-              
               addLog(`✅ Session completed: Port ${session.connector_id}, ${session.energy_kwh}kWh, ${session.duration_minutes}m`);
               
               const portKey = `${stationId}-${session.connector_id}`;
@@ -956,6 +1090,23 @@ const { data: sessions } = useQuery({
               }
             }
 
+            // AUTO-RECOVER: If no session exists but device is sending data, create session
+            if (!sessionFound && payload.meterValue) {
+              const autoTxId = `auto-${Date.now()}`;
+              sessionFound = {
+                station_id: stationId,
+                connector_id: connectorId,
+                start_time: new Date().toISOString(),
+                energy_kwh: 0,
+                current_power_w: 0,
+                voltage_v: 0,
+                current_a: 0,
+                temperature_c: 0
+              };
+              activeSessions.set(autoTxId, sessionFound);
+              addLog(`🔄 AUTO-RECOVER: Created session for Port ${connectorId} (device was already charging)`);
+            }
+
             if (sessionFound && payload.meterValue) {
               const { power, energy, voltage, current, temperature } = parseMeterValues(payload.meterValue);
 
@@ -987,8 +1138,6 @@ const { data: sessions } = useQuery({
                   console.error('Bridge error:', error);
                 }
               }
-            } else {
-              addLog(`⚠️ No active session found for Port ${connectorId}`);
             }
             break;
 
