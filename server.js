@@ -11,14 +11,42 @@ const CALLERROR = 4;
 // Store devices, sessions, and complete history
 const connectedDevices = new Map();
 const activeSessions = new Map();
-const completedSessions = []; // Stores all completed sessions for reports
+let completedSessions = []; // Stores all completed sessions for reports - PERSISTENT
 const activityLog = [];
 const portLastPowerCheck = new Map(); // Track when port last had 0W
 const deviceLastHeartbeat = new Map(); // Track last heartbeat per device
 
+const SESSION_FILE = '/tmp/sessions.json';
+
+// Load sessions from file on startup
+async function loadSessions() {
+  try {
+    const data = await Deno.readTextFile(SESSION_FILE);
+    completedSessions = JSON.parse(data);
+    console.log(`✅ Loaded ${completedSessions.length} sessions from disk`);
+  } catch (error) {
+    console.log('📝 No existing session file, starting fresh');
+    completedSessions = [];
+  }
+}
+
+// Save sessions to file
+async function saveSessions() {
+  try {
+    await Deno.writeTextFile(SESSION_FILE, JSON.stringify(completedSessions));
+    console.log(`💾 Saved ${completedSessions.length} sessions to disk`);
+  } catch (error) {
+    console.error('❌ Failed to save sessions:', error.message);
+  }
+}
+
+// Load sessions on startup
+await loadSessions();
+
 console.log('🚀 OCPP WebSocket Server v3.0 Starting...');
 console.log('📊 Device disconnect detection enabled');
 console.log('🔄 Auto-cleanup on device offline/power-off');
+console.log(`💾 Persistent storage: ${completedSessions.length} sessions loaded`);
 
 // Monitor device heartbeats - mark offline if no heartbeat for 60 seconds
 setInterval(() => {
@@ -45,6 +73,7 @@ setInterval(() => {
             portLastPowerCheck.delete(`${stationId}-${session.connector_id}`);
             
             addLog(`🔄 Auto-completed Port ${session.connector_id} (device offline)`);
+            saveSessions(); // Save to disk
           }
         }
       }
@@ -73,8 +102,9 @@ setInterval(() => {
         completedSessions.unshift({ ...session, transaction_id: txId });
         activeSessions.delete(txId);
         portLastPowerCheck.delete(portKey);
-        
+
         addLog(`🔄 Auto-cleaned ghost session: Port ${session.connector_id} (0W for 30s)`);
+        saveSessions(); // Save to disk
       } else if (!portLastPowerCheck.has(portKey)) {
         portLastPowerCheck.set(portKey, now);
       }
@@ -235,6 +265,7 @@ function generateLogsPage(sessions, filters) {
     <div class="card">
       <form class="filters" method="GET">
         <input type="date" name="date" value="${date || ''}" placeholder="Select Date">
+        <input type="month" name="month" value="${filters.month || ''}" placeholder="Select Month">
         <input type="text" name="station" value="${station || ''}" placeholder="Station ID (e.g., 01)">
         <input type="number" name="port" value="${port || ''}" placeholder="Port (1-10)" min="1" max="10">
         <button type="submit" class="btn">🔍 Filter</button>
@@ -874,6 +905,7 @@ const { data: sessions } = useQuery({
   // Logs endpoint
   if (url.pathname === '/logs') {
     const date = url.searchParams.get('date');
+    const month = url.searchParams.get('month');
     const station = url.searchParams.get('station');
     const port = url.searchParams.get('port');
     const format = url.searchParams.get('format');
@@ -882,6 +914,10 @@ const { data: sessions } = useQuery({
 
     if (date) {
       filtered = filtered.filter(s => s.start_time.startsWith(date));
+    }
+
+    if (month) {
+      filtered = filtered.filter(s => s.start_time.startsWith(month));
     }
 
     if (station) {
@@ -900,15 +936,16 @@ const { data: sessions } = useQuery({
         )
       ].join('\n');
 
+      const fileName = month ? `charging-logs-${month}.csv` : date ? `charging-logs-${date}.csv` : 'charging-logs-all.csv';
       return new Response(csv, {
         headers: {
           'Content-Type': 'text/csv',
-          'Content-Disposition': `attachment; filename="charging-logs-${date || 'all'}.csv"`
+          'Content-Disposition': `attachment; filename="${fileName}"`
         }
       });
     }
 
-    const html = generateLogsPage(filtered, { date, station, port });
+    const html = generateLogsPage(filtered, { date, month, station, port });
     return new Response(html, {
       headers: { 'Content-Type': 'text/html' }
     });
@@ -1056,6 +1093,7 @@ const { data: sessions } = useQuery({
               });
               
               addLog(`✅ Session completed: Port ${session.connector_id}, ${session.energy_kwh}kWh, ${session.duration_minutes}m`);
+              saveSessions(); // Save to disk
               
               const portKey = `${stationId}-${session.connector_id}`;
               portLastPowerCheck.delete(portKey);
@@ -1174,6 +1212,7 @@ const { data: sessions } = useQuery({
         portLastPowerCheck.delete(portKey);
 
         addLog(`🔄 Auto-completed Port ${session.connector_id} (device disconnected)`);
+        saveSessions(); // Save to disk
 
         callBridge('updateSession', {
           station_id: stationId,
