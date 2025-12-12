@@ -1,147 +1,172 @@
-// OCPP 1.6 WebSocket Server - With Complete Session Logging & Reports
-  // Full MeterValues parsing, live dashboard, and historical logs
+// OCPP 1.6 WebSocket Server - v3.0 with Device Disconnect Detection
+// Auto-clears ports when device goes offline, shows real connection status
 
-  const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
-  const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
+const BRIDGE_URL = Deno.env.get("BRIDGE_URL");
+const BRIDGE_SECRET = Deno.env.get("BRIDGE_SECRET");
 
-  const CALL = 2;
-  const CALLRESULT = 3;
-  const CALLERROR = 4;
+const CALL = 2;
+const CALLRESULT = 3;
+const CALLERROR = 4;
 
-  // Store devices, sessions, and complete history
-  const connectedDevices = new Map();
-  const activeSessions = new Map();
-  const completedSessions = []; // Stores all completed sessions for reports
-  const activityLog = [];
-  const portLastPowerCheck = new Map(); // Track when port last had 0W
+// Store devices, sessions, and complete history
+const connectedDevices = new Map();
+const activeSessions = new Map();
+const completedSessions = []; // Stores all completed sessions for reports
+const activityLog = [];
+const portLastPowerCheck = new Map(); // Track when port last had 0W
+const deviceLastHeartbeat = new Map(); // Track last heartbeat per device
 
-  console.log('🚀 OCPP WebSocket Server Starting...');
-  console.log('📊 Session logging enabled - All charging records saved');
-  console.log('📁 Reports available at /logs endpoint');
+console.log('🚀 OCPP WebSocket Server v3.0 Starting...');
+console.log('📊 Device disconnect detection enabled');
+console.log('🔄 Auto-cleanup on device offline/power-off');
 
-  // Auto-cleanup ghost sessions every 5 seconds
-  setInterval(() => {
-    const now = Date.now();
-    for (const [txId, session] of activeSessions.entries()) {
-      const power = session.current_power_w || 0;
-      const portKey = `${session.station_id}-${session.connector_id}`;
-      
-      // If port has 0W power
-      if (power === 0) {
-        const lastCheck = portLastPowerCheck.get(portKey) || now;
-        const secondsAtZero = (now - lastCheck) / 1000;
+// Monitor device heartbeats - mark offline if no heartbeat for 60 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [stationId, lastHeartbeat] of deviceLastHeartbeat.entries()) {
+    const secondsSinceHeartbeat = (now - lastHeartbeat) / 1000;
+    
+    // If no heartbeat for 60 seconds, mark device as offline
+    if (secondsSinceHeartbeat > 60) {
+      const device = connectedDevices.get(stationId);
+      if (device && device.status !== 'offline') {
+        device.status = 'offline';
+        addLog(`⚠️ Device ${stationId} marked OFFLINE (no heartbeat for 60s)`);
         
-        // If 0W for more than 30 seconds, auto-complete session
-        if (secondsAtZero > 30) {
-          session.end_time = new Date().toISOString();
-          session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
-          session.status = 'completed';
-          
-          completedSessions.unshift({ ...session, transaction_id: txId });
-          activeSessions.delete(txId);
-          portLastPowerCheck.delete(portKey);
-          
-          addLog(`🔄 Auto-cleaned ghost session: Port ${session.connector_id} (0W for 30s)`);
-        } else if (!portLastPowerCheck.has(portKey)) {
-          portLastPowerCheck.set(portKey, now);
+        // Auto-complete all active sessions for this device
+        for (const [txId, session] of activeSessions.entries()) {
+          if (session.station_id === stationId) {
+            session.end_time = new Date().toISOString();
+            session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
+            session.status = 'completed';
+            
+            completedSessions.unshift({ ...session, transaction_id: txId });
+            activeSessions.delete(txId);
+            portLastPowerCheck.delete(`${stationId}-${session.connector_id}`);
+            
+            addLog(`🔄 Auto-completed Port ${session.connector_id} (device offline)`);
+          }
         }
-      } else {
-        // Port has power, reset timer
-        portLastPowerCheck.delete(portKey);
       }
     }
-  }, 5000);
+  }
+}, 10000); // Check every 10 seconds
 
-  function addLog(message) {
+// Auto-cleanup ghost sessions every 5 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [txId, session] of activeSessions.entries()) {
+    const power = session.current_power_w || 0;
+    const portKey = `${session.station_id}-${session.connector_id}`;
+    
+    // If port has 0W power
+    if (power === 0) {
+      const lastCheck = portLastPowerCheck.get(portKey) || now;
+      const secondsAtZero = (now - lastCheck) / 1000;
+      
+      // If 0W for more than 30 seconds, auto-complete session
+      if (secondsAtZero > 30) {
+        session.end_time = new Date().toISOString();
+        session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
+        session.status = 'completed';
+        
+        completedSessions.unshift({ ...session, transaction_id: txId });
+        activeSessions.delete(txId);
+        portLastPowerCheck.delete(portKey);
+        
+        addLog(`🔄 Auto-cleaned ghost session: Port ${session.connector_id} (0W for 30s)`);
+      } else if (!portLastPowerCheck.has(portKey)) {
+        portLastPowerCheck.set(portKey, now);
+      }
+    } else {
+      // Port has power, reset timer
+      portLastPowerCheck.delete(portKey);
+    }
+  }
+}, 5000);
+
+function addLog(message) {
   const timestamp = new Date().toISOString();
   activityLog.unshift({ timestamp, message });
   if (activityLog.length > 50) activityLog.pop();
   console.log(message);
-  }
+}
 
-  async function callBridge(action, data) {
+async function callBridge(action, data) {
   if (!BRIDGE_URL) return null;
   try {
-  const response = await fetch(BRIDGE_URL, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'x-bridge-secret': BRIDGE_SECRET || ''
-  },
-  body: JSON.stringify({ action, data })
-  });
-  
-  // Check if response is JSON
-  const contentType = response.headers.get('content-type');
-  if (contentType && contentType.includes('application/json')) {
-    return await response.json();
-  } else {
-    console.error('Bridge returned non-JSON:', await response.text());
+    const response = await fetch(BRIDGE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-bridge-secret': BRIDGE_SECRET || ''
+      },
+      body: JSON.stringify({ action, data })
+    });
+    
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return await response.json();
+    } else {
+      console.error('Bridge returned non-JSON:', await response.text());
+      return null;
+    }
+  } catch (error) {
+    console.error('Bridge error:', error.message);
     return null;
   }
-  } catch (error) {
-  console.error('Bridge error:', error.message);
-  return null;
-  }
-  }
+}
 
-  // Parse MeterValues to extract power, energy, voltage, current, temp
-  function parseMeterValues(meterValue) {
-    let power = 0;
-    let energy = 0;
-    let voltage = 0;
-    let current = 0;
-    let temperature = 0;
+// Parse MeterValues to extract power, energy, voltage, current, temp
+function parseMeterValues(meterValue) {
+  let power = 0;
+  let energy = 0;
+  let voltage = 0;
+  let current = 0;
+  let temperature = 0;
 
-    if (!meterValue || !Array.isArray(meterValue)) return { power, energy, voltage, current, temperature };
+  if (!meterValue || !Array.isArray(meterValue)) return { power, energy, voltage, current, temperature };
 
-    for (const meter of meterValue) {
-      if (!meter.sampledValue || !Array.isArray(meter.sampledValue)) continue;
+  for (const meter of meterValue) {
+    if (!meter.sampledValue || !Array.isArray(meter.sampledValue)) continue;
 
-      for (const sample of meter.sampledValue) {
-        const measurand = sample.measurand || '';
-        const value = parseFloat(sample.value) || 0;
+    for (const sample of meter.sampledValue) {
+      const measurand = sample.measurand || '';
+      const value = parseFloat(sample.value) || 0;
 
-        // Power in Watts (W) - CRITICAL: This is real-time power consumption
-        if (measurand === 'Power.Active.Import') {
-          power = value;
-        }
+      if (measurand === 'Power.Active.Import') {
+        power = value;
+      }
 
-        // Energy in Watt-hours (Wh) - convert to kWh
-        if (measurand === 'Energy.Active.Import.Register') {
-          energy = value / 1000; // Wh to kWh
-        }
+      if (measurand === 'Energy.Active.Import.Register') {
+        energy = value / 1000; // Wh to kWh
+      }
 
-        // Voltage (V) - typically L1-N phase
-        if (measurand === 'Voltage' && sample.phase === 'L1-N') {
-          voltage = value;
-        }
+      if (measurand === 'Voltage' && sample.phase === 'L1-N') {
+        voltage = value;
+      }
 
-        // Current (A) - typically L1-N phase
-        if (measurand === 'Current.Import' && sample.phase === 'L1-N') {
-          current = value;
-        }
+      if (measurand === 'Current.Import' && sample.phase === 'L1-N') {
+        current = value;
+      }
 
-        // Temperature (Celsius)
-        if (measurand === 'Temperature') {
-          temperature = value;
-        }
+      if (measurand === 'Temperature') {
+        temperature = value;
       }
     }
-
-    return { power, energy, voltage, current, temperature };
   }
+
+  return { power, energy, voltage, current, temperature };
+}
 
 function generateLogsPage(sessions, filters) {
   const { date, station, port } = filters;
   
-  // Calculate statistics
   const totalSessions = sessions.length;
   const totalEnergy = sessions.reduce((sum, s) => sum + (parseFloat(s.energy_kwh) || 0), 0);
   const totalDuration = sessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
   const avgDuration = totalSessions > 0 ? Math.round(totalDuration / totalSessions) : 0;
 
-  // Group by date
   const byDate = {};
   sessions.forEach(s => {
     const day = s.start_time.split('T')[0];
@@ -249,7 +274,7 @@ function generateLogsPage(sessions, filters) {
                     <td>${new Date(s.start_time).toLocaleTimeString()}</td>
                     <td>${s.end_time ? new Date(s.end_time).toLocaleTimeString() : 'Active'}</td>
                     <td>${s.duration_minutes || 0} min</td>
-                    <td><strong>${(s.energy_kwh || 0).toFixed(3)}</strong></td>
+                    <td><strong>${(s.energy_kwh || 0).toFixed(5)}</strong></td>
                     <td>${s.current_power_w || 0} W</td>
                     <td>${(s.voltage_v || 0).toFixed(1)} V</td>
                     <td>${(s.current_a || 0).toFixed(2)} A</td>
@@ -270,7 +295,6 @@ function generateDashboard() {
   const devices = Array.from(connectedDevices.values());
   const sessions = Array.from(activeSessions.values());
   
-  // Calculate total power across all ports
   const totalPower = sessions.reduce((sum, s) => sum + (s.current_power_w || 0), 0);
   
   return `<!DOCTYPE html>
@@ -295,6 +319,7 @@ function generateDashboard() {
     .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
     .badge-success { background: #10b981; color: white; }
     .badge-danger { background: #ef4444; color: white; }
+    .badge-warning { background: #f59e0b; color: white; }
     .badge-idle { background: #64748b; color: white; }
     .ports-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
     .port-card { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); border-radius: 12px; padding: 20px; border: 3px solid #e2e8f0; transition: all 0.3s; }
@@ -314,6 +339,7 @@ function generateDashboard() {
     .energy-value { font-weight: 700; font-size: 14px; }
     .device-grid { display: grid; gap: 15px; }
     .device-item { background: #f8fafc; border-radius: 12px; padding: 20px; border: 2px solid #e2e8f0; }
+    .device-item.offline { background: #fee2e2; border-color: #ef4444; }
     .device-name { font-size: 18px; font-weight: 700; color: #1e293b; }
     .device-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; font-size: 13px; color: #64748b; margin-top: 12px; }
     .log { background: #1e293b; border-radius: 12px; padding: 20px; max-height: 300px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; }
@@ -327,14 +353,14 @@ function generateDashboard() {
 <body>
   <div class="container">
     <div class="header">
-      <div class="title">⚡ OCPP Server Dashboard</div>
-      <div class="subtitle">Live Port Monitoring - Auto-refresh every 3 seconds | <a href="/logs" style="color:#667eea;text-decoration:none;font-weight:600;">📊 View Logs & Reports</a> | <a href="/tutorial" style="color:#10b981;text-decoration:none;font-weight:600;">📚 Integration Tutorial</a></div>
+      <div class="title">⚡ OCPP Server Dashboard v3.0</div>
+      <div class="subtitle">Live Port Monitoring + Device Status - Auto-refresh every 3 seconds | <a href="/logs" style="color:#667eea;text-decoration:none;font-weight:600;">📊 View Logs & Reports</a> | <a href="/tutorial" style="color:#10b981;text-decoration:none;font-weight:600;">📚 Integration Tutorial</a></div>
     </div>
 
     <div class="stats">
       <div class="stat-card">
         <div class="stat-label">Connected Devices</div>
-        <div class="stat-value" style="color: #10b981;">${devices.length}</div>
+        <div class="stat-value" style="color: ${devices.filter(d => d.status !== 'offline').length > 0 ? '#10b981' : '#ef4444'};">${devices.filter(d => d.status !== 'offline').length}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Active Ports</div>
@@ -346,7 +372,7 @@ function generateDashboard() {
       </div>
       <div class="stat-card">
         <div class="stat-label">Total Energy</div>
-        <div class="stat-value" style="color: #06b6d4;">${sessions.reduce((sum, s) => sum + (s.energy_kwh || 0), 0).toFixed(2)} kWh</div>
+        <div class="stat-value" style="color: #06b6d4;">${sessions.reduce((sum, s) => sum + (s.energy_kwh || 0), 0).toFixed(5)} kWh</div>
       </div>
     </div>
 
@@ -356,7 +382,7 @@ function generateDashboard() {
         ${Array.from({ length: 10 }, (_, i) => i + 1).map(portNum => {
           const session = sessions.find(s => s.connector_id === portNum);
           const power = session?.current_power_w || 0;
-          const isActive = !!session && power > 1; // Only active if session exists AND has power
+          const isActive = !!session && power > 1;
           const energy = session?.energy_kwh || 0;
           const duration = session ? Math.floor((Date.now() - new Date(session.start_time)) / 60000) : 0;
           
@@ -374,7 +400,7 @@ function generateDashboard() {
                 <div class="energy-display">
                   <div class="energy-item">
                     <div>⚡ Energy</div>
-                    <div class="energy-value">${energy.toFixed(3)} kWh</div>
+                    <div class="energy-value">${energy.toFixed(5)} kWh</div>
                   </div>
                   <div class="energy-item">
                     <div>⏱️ Duration</div>
@@ -405,13 +431,18 @@ function generateDashboard() {
       ${devices.length === 0 ? 
         '<div class="empty">No devices connected yet.</div>' :
         '<div class="device-grid">' + devices.map(d => `
-          <div class="device-item">
-            <div class="device-name">${d.station_id} <span class="badge badge-success">Online</span></div>
+          <div class="device-item ${d.status === 'offline' ? 'offline' : ''}">
+            <div class="device-name">${d.station_id} 
+              <span class="badge ${d.status === 'offline' ? 'badge-danger' : 'badge-success'}">
+                ${d.status === 'offline' ? '⚠️ OFFLINE' : '✅ ONLINE'}
+              </span>
+            </div>
             <div class="device-meta">
               <div><strong>Vendor:</strong> ${d.vendor || 'N/A'}</div>
               <div><strong>Model:</strong> ${d.model || 'N/A'}</div>
               <div><strong>Firmware:</strong> ${d.firmware || 'N/A'}</div>
               <div><strong>Connected:</strong> ${new Date(d.connected_at).toLocaleTimeString()}</div>
+              <div><strong>Status:</strong> ${d.status === 'offline' ? 'No internet or powered off' : 'Active'}</div>
             </div>
           </div>
         `).join('') + '</div>'
@@ -433,9 +464,9 @@ function generateDashboard() {
       <p style="opacity: 0.9; margin-bottom: 15px;">Learn how to connect your Base44 app to this Railway server for real-time charging management.</p>
       <a href="/tutorial" style="display: inline-block; background: white; color: #10b981; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Integration Tutorial →</a>
     </div>
-    </div>
-    </body>
-    </html>`;
+  </div>
+</body>
+</html>`;
 }
 
 Deno.serve({ port: 8080 }, async (req) => {
@@ -453,7 +484,8 @@ Deno.serve({ port: 8080 }, async (req) => {
     return Response.json({
       success: true,
       devices: connectedDevices.size,
-      sessions: activeSessions.size
+      sessions: activeSessions.size,
+      devices_online: Array.from(connectedDevices.values()).filter(d => d.status !== 'offline').length
     });
   }
 
@@ -472,7 +504,7 @@ Deno.serve({ port: 8080 }, async (req) => {
     return Response.json({ success: true, sessions });
   }
 
-  // Tutorial endpoint - integration guide
+  // Tutorial endpoint
   if (url.pathname === '/tutorial') {
     const tutorialHtml = `<!DOCTYPE html>
   <html lang="en">
@@ -519,7 +551,7 @@ Deno.serve({ port: 8080 }, async (req) => {
           <code>/api/status</code>
           <p style="margin-top: 10px;">Check if Railway server is online and get device/session counts.</p>
           <div class="endpoint">
-  Response: { success: true, devices: 1, sessions: 3 }
+Response: { success: true, devices: 1, sessions: 3, devices_online: 1 }
           </div>
         </div>
 
@@ -528,15 +560,16 @@ Deno.serve({ port: 8080 }, async (req) => {
           <code>/api/devices</code>
           <p style="margin-top: 10px;">Get list of all connected charging devices.</p>
           <div class="endpoint">
-  Response: {
-    success: true,
-    devices: [{
-      station_id: "01",
-      vendor: "ChargePoint",
-      model: "M01-10",
-      connected_at: "2025-12-11T10:30:00Z"
-    }]
-  }
+Response: {
+  success: true,
+  devices: [{
+    station_id: "01",
+    vendor: "ChargePoint",
+    model: "M01-10",
+    status: "online" or "offline",
+    connected_at: "2025-12-11T10:30:00Z"
+  }]
+}
           </div>
         </div>
 
@@ -545,19 +578,19 @@ Deno.serve({ port: 8080 }, async (req) => {
           <code>/api/sessions/:stationId</code>
           <p style="margin-top: 10px;">Get active charging sessions for a specific device (e.g., /api/sessions/01).</p>
           <div class="endpoint">
-  Response: {
-    success: true,
-    sessions: [{
-      station_id: "01",
-      connector_id: 8,
-      energy_kwh: 0.024,
-      current_power_w: 266,
-      voltage_v: 229,
-      current_a: 1.94,
-      temperature_c: 0,
-      start_time: "2025-12-11T10:45:00Z"
-    }]
-  }
+Response: {
+  success: true,
+  sessions: [{
+    station_id: "01",
+    connector_id: 8,
+    energy_kwh: 0.02400,
+    current_power_w: 266,
+    voltage_v: 229,
+    current_a: 1.94,
+    temperature_c: 0,
+    start_time: "2025-12-11T10:45:00Z"
+  }]
+}
           </div>
         </div>
 
@@ -566,14 +599,14 @@ Deno.serve({ port: 8080 }, async (req) => {
           <code>/command</code>
           <p style="margin-top: 10px;">Send OCPP commands to devices (start/stop charging).</p>
           <div class="endpoint">
-  Request Body:
-  {
-    station_id: "01",
-    action: "RemoteStartTransaction",
-    payload: { connectorId: 8, idTag: "user@email.com" }
-  }
+Request Body:
+{
+  station_id: "01",
+  action: "RemoteStartTransaction",
+  payload: { connectorId: 8, idTag: "user@email.com" }
+}
 
-  Response: { success: true, message: "Command sent" }
+Response: { success: true, message: "Command sent" }
           </div>
         </div>
       </div>
@@ -586,22 +619,22 @@ Deno.serve({ port: 8080 }, async (req) => {
           <strong>Create a Base44 Backend Function</strong>
           <p style="margin-top: 10px;">Create <code>functions/getRailwayData.js</code> in your Base44 app:</p>
           <div class="endpoint" style="margin-top: 10px;">
-  import { createClientFromRequest } from 'npm:@base44/sdk@0.8.4';
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.4';
 
-  const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
+const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
 
-  Deno.serve(async (req) => {
-    try {
-      const { endpoint } = await req.json();
+Deno.serve(async (req) => {
+  try {
+    const { endpoint } = await req.json();
 
-      const response = await fetch(\`\${RAILWAY_URL}\${endpoint}\`);
-      const data = await response.json();
+    const response = await fetch(\`\${RAILWAY_URL}\${endpoint}\`);
+    const data = await response.json();
 
-      return Response.json(data);
-    } catch (error) {
-      return Response.json({ error: error.message }, { status: 500 });
-    }
-  });
+    return Response.json(data);
+  } catch (error) {
+    return Response.json({ error: error.message }, { status: 500 });
+  }
+});
           </div>
         </div>
 
@@ -610,7 +643,7 @@ Deno.serve({ port: 8080 }, async (req) => {
           <strong>Set Environment Variables in Base44</strong>
           <p style="margin-top: 10px;">Go to Base44 Dashboard → Settings → Environment Variables and add:</p>
           <div class="endpoint" style="margin-top: 10px;">
-  RAILWAY_URL=https://newoccp.up.railway.app
+RAILWAY_URL=https://newoccp.up.railway.app
           </div>
           <p style="margin-top: 8px; font-size: 12px; color: #64748b;">(Replace with your actual Railway app URL)</p>
         </div>
@@ -620,15 +653,15 @@ Deno.serve({ port: 8080 }, async (req) => {
           <strong>Fetch Data in Your Base44 Page</strong>
           <p style="margin-top: 10px;">Use the backend function to get Railway data:</p>
           <div class="endpoint" style="margin-top: 10px;">
-  import { base44 } from "@/api/base44Client";
+import { base44 } from "@/api/base44Client";
 
-  // Get active sessions
-  const { data } = await base44.functions.invoke('getRailwayData', {
-    endpoint: '/api/sessions/01'
-  });
+// Get active sessions
+const { data } = await base44.functions.invoke('getRailwayData', {
+  endpoint: '/api/sessions/01'
+});
 
-  // data.sessions will contain active charging sessions
-  console.log(data.sessions);
+// data.sessions will contain active charging sessions
+console.log(data.sessions);
           </div>
         </div>
 
@@ -637,19 +670,19 @@ Deno.serve({ port: 8080 }, async (req) => {
           <strong>Send Commands to Device</strong>
           <p style="margin-top: 10px;">Create <code>functions/sendRailwayCommand.js</code>:</p>
           <div class="endpoint" style="margin-top: 10px;">
-  const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
+const RAILWAY_URL = Deno.env.get("RAILWAY_URL");
 
-  Deno.serve(async (req) => {
-    const { station_id, action, payload } = await req.json();
+Deno.serve(async (req) => {
+  const { station_id, action, payload } = await req.json();
 
-    const response = await fetch(\`\${RAILWAY_URL}/command\`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ station_id, action, payload })
-    });
-
-    return Response.json(await response.json());
+  const response = await fetch(\`\${RAILWAY_URL}/command\`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ station_id, action, payload })
   });
+
+  return Response.json(await response.json());
+});
           </div>
         </div>
       </div>
@@ -658,16 +691,16 @@ Deno.serve({ port: 8080 }, async (req) => {
         <h3>📊 Real-Time Updates Pattern</h3>
         <p>For live data updates, use React Query with polling:</p>
         <div class="endpoint" style="margin-top: 10px;">
-  const { data: sessions } = useQuery({
-    queryKey: ['railway-sessions'],
-    queryFn: async () => {
-      const { data } = await base44.functions.invoke('getRailwayData', {
-        endpoint: '/api/sessions/01'
-      });
-      return data.sessions;
-    },
-    refetchInterval: 2000  // Update every 2 seconds
-  });
+const { data: sessions } = useQuery({
+  queryKey: ['railway-sessions'],
+  queryFn: async () => {
+    const { data } = await base44.functions.invoke('getRailwayData', {
+      endpoint: '/api/sessions/01'
+    });
+    return data.sessions;
+  },
+  refetchInterval: 2000  // Update every 2 seconds
+});
         </div>
       </div>
 
@@ -693,40 +726,36 @@ Deno.serve({ port: 8080 }, async (req) => {
         <p style="margin-top: 10px;"><a href="/logs">📊 View Session Logs & Reports</a></p>
         <p style="margin-top: 10px;"><a href="/api/status" target="_blank">🔍 Test API Status Endpoint</a></p>
       </div>
-      </div>
-      </body>
-      </html>`;
+    </div>
+  </body>
+  </html>`;
 
-      return new Response(tutorialHtml, {
-        headers: { 'Content-Type': 'text/html' }
-      });
-      }
+    return new Response(tutorialHtml, {
+      headers: { 'Content-Type': 'text/html' }
+    });
+  }
 
-  // Logs endpoint - view/filter completed sessions
+  // Logs endpoint
   if (url.pathname === '/logs') {
-    const date = url.searchParams.get('date'); // YYYY-MM-DD format
+    const date = url.searchParams.get('date');
     const station = url.searchParams.get('station');
     const port = url.searchParams.get('port');
-    const format = url.searchParams.get('format'); // 'json' or 'csv'
+    const format = url.searchParams.get('format');
 
     let filtered = [...completedSessions];
 
-    // Filter by date
     if (date) {
       filtered = filtered.filter(s => s.start_time.startsWith(date));
     }
 
-    // Filter by station
     if (station) {
       filtered = filtered.filter(s => s.station_id === station);
     }
 
-    // Filter by port
     if (port) {
       filtered = filtered.filter(s => s.connector_id === parseInt(port));
     }
 
-    // Return CSV format for download
     if (format === 'csv') {
       const csv = [
         'Date,Station,Port,Start Time,End Time,Duration (min),Energy (kWh),Max Power (W),Avg Voltage (V),Avg Current (A)',
@@ -743,7 +772,6 @@ Deno.serve({ port: 8080 }, async (req) => {
       });
     }
 
-    // HTML report page
     const html = generateLogsPage(filtered, { date, station, port });
     return new Response(html, {
       headers: { 'Content-Type': 'text/html' }
@@ -790,10 +818,12 @@ Deno.serve({ port: 8080 }, async (req) => {
       station_id: stationId,
       socket: socket,
       connected_at: new Date().toISOString(),
+      status: 'online',
       vendor: 'Unknown',
       model: 'Unknown',
       firmware: 'Unknown'
     });
+    deviceLastHeartbeat.set(stationId, Date.now());
     addLog(`✅ Connected: ${stationId}`);
   };
 
@@ -814,13 +844,14 @@ Deno.serve({ port: 8080 }, async (req) => {
               currentTime: new Date().toISOString(),
               interval: 300
             };
-            // Update device info
             const device = connectedDevices.get(stationId);
             if (device) {
               device.vendor = payload.chargePointVendor || 'Unknown';
               device.model = payload.chargePointModel || 'Unknown';
               device.firmware = payload.firmwareVersion || 'Unknown';
+              device.status = 'online';
             }
+            deviceLastHeartbeat.set(stationId, Date.now());
             await callBridge('registerStation', {
               station_id: stationId,
               name: `Station ${stationId}`,
@@ -831,6 +862,9 @@ Deno.serve({ port: 8080 }, async (req) => {
 
           case 'Heartbeat':
             response = { currentTime: new Date().toISOString() };
+            deviceLastHeartbeat.set(stationId, Date.now());
+            const dev = connectedDevices.get(stationId);
+            if (dev) dev.status = 'online';
             await callBridge('updateStation', {
               station_id: stationId,
               updates: { last_heartbeat: new Date().toISOString() }
@@ -873,33 +907,27 @@ Deno.serve({ port: 8080 }, async (req) => {
             response = { idTagInfo: { status: 'Accepted' } };
             const session = activeSessions.get(payload.transactionId?.toString());
             if (session) {
-              // Finalize session data
               if (payload.meterStop) {
-                session.energy_kwh = (payload.meterStop / 1000).toFixed(3);
+                session.energy_kwh = (payload.meterStop / 1000).toFixed(5);
               }
               session.end_time = new Date().toISOString();
               session.duration_minutes = Math.floor((new Date(session.end_time) - new Date(session.start_time)) / 60000);
               session.status = 'completed';
               
-              // Save to completed sessions log
               completedSessions.unshift({
                 ...session,
                 transaction_id: payload.transactionId?.toString()
               });
               
-              // Keep last 1000 sessions
               if (completedSessions.length > 1000) completedSessions.pop();
               
               addLog(`✅ Session completed: Port ${session.connector_id}, ${session.energy_kwh}kWh, ${session.duration_minutes}m`);
               
-              // Clear power tracking
               const portKey = `${stationId}-${session.connector_id}`;
               portLastPowerCheck.delete(portKey);
               
-              // Remove from active
               activeSessions.delete(payload.transactionId?.toString());
               
-              // Update Base44
               await callBridge('updateSession', {
                 station_id: stationId,
                 updates: { 
@@ -915,13 +943,11 @@ Deno.serve({ port: 8080 }, async (req) => {
           case 'MeterValues':
             response = {};
 
-            // Extract connector ID and transaction ID
             const connectorId = payload.connectorId;
             const transactionId = payload.transactionId?.toString();
 
             addLog(`📊 MeterValues from Port ${connectorId} (TxID: ${transactionId})`);
 
-            // Find session by connector ID or transaction ID
             let sessionFound = null;
             for (const [key, session] of activeSessions.entries()) {
               if (session.connector_id === connectorId || key === transactionId) {
@@ -933,16 +959,14 @@ Deno.serve({ port: 8080 }, async (req) => {
             if (sessionFound && payload.meterValue) {
               const { power, energy, voltage, current, temperature } = parseMeterValues(payload.meterValue);
 
-              // Update session with ALL real values from device
               sessionFound.current_power_w = power;
               sessionFound.energy_kwh = energy;
               sessionFound.voltage_v = voltage;
               sessionFound.current_a = current;
               sessionFound.temperature_c = temperature;
 
-              addLog(`⚡ Port ${connectorId}: ${power}W | ${energy.toFixed(3)}kWh | ${voltage}V | ${current}A | ${temperature}°C`);
+              addLog(`⚡ Port ${connectorId}: ${power}W | ${energy.toFixed(5)}kWh | ${voltage}V | ${current}A | ${temperature}°C`);
 
-              // Bridge to Base44 database - send port-specific data
               if (BRIDGE_URL) {
                 try {
                   await fetch(BRIDGE_URL, {
@@ -980,6 +1004,13 @@ Deno.serve({ port: 8080 }, async (req) => {
   };
 
   socket.onclose = () => {
+    // Mark device as offline
+    const device = connectedDevices.get(stationId);
+    if (device) {
+      device.status = 'offline';
+    }
+    deviceLastHeartbeat.delete(stationId);
+    
     // Auto-complete any active sessions from this device
     for (const [txId, session] of activeSessions.entries()) {
       if (session.station_id === stationId) {
@@ -990,13 +1021,11 @@ Deno.serve({ port: 8080 }, async (req) => {
         completedSessions.unshift({ ...session, transaction_id: txId });
         activeSessions.delete(txId);
 
-        // Clear power tracking
         const portKey = `${stationId}-${session.connector_id}`;
         portLastPowerCheck.delete(portKey);
 
         addLog(`🔄 Auto-completed Port ${session.connector_id} (device disconnected)`);
 
-        // Notify Base44
         callBridge('updateSession', {
           station_id: stationId,
           updates: { 
@@ -1009,8 +1038,7 @@ Deno.serve({ port: 8080 }, async (req) => {
       }
     }
 
-    connectedDevices.delete(stationId);
-    addLog(`❌ Disconnected: ${stationId}`);
+    addLog(`❌ Disconnected: ${stationId} - Device OFFLINE`);
   };
 
   socket.onerror = (error) => {
